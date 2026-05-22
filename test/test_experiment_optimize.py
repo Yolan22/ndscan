@@ -9,8 +9,6 @@ from ndscan.experiment.optimize import (
     BayesianOptimizer,
     SAASBayesianOptimizer
 )
-from ndscan.ndscan.experiment.optimizers.saasbo import SAASBayesianOptimizer
-
 
 class QuadraticFragment(ExpFragment):
     def build_fragment(self):
