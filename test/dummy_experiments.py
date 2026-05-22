@@ -148,7 +148,7 @@ class AckleyMaximizationExperiment:
             
             f = 20 * np.exp(term1) + np.exp(term2) - 20 - np.e
             
-            base_score = -f
+            base_score = f
             
             shot_scores = base_score + np.random.normal(0, self.noise_level, size=self.m_shots)
             means.append(np.mean(shot_scores))
