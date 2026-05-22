@@ -16,7 +16,6 @@ from botorch.acquisition.monte_carlo import (
     qUpperConfidenceBound,
 )
 from gpytorch.kernels import MaternKernel, ScaleKernel
-from gpytorch.mlls import ExactMarginalLogLikelihood
 from scipy.stats.qmc import LatinHypercube, scale
 
 # for SAASBO implementation 
@@ -44,7 +43,7 @@ class SAASBayesianOptimizerOptimizeAlgorithmSpec(OptimizeAlgorithmSpec):
     user_seed: int = -1
 
 
-class SAASBayesianOptimizer():
+class SAASBayesianOptimizer(Optimizer):
     """
     Sequential ask/tell SAAS Bayesian Optimization implementation.
 
@@ -101,6 +100,8 @@ class SAASBayesianOptimizer():
 
         # initialize training dataset
         self.init_x = torch.from_numpy(self.normalize(self.x)).double()
+        assert self.init_x.ndim == 2, f"init_x must be 2D, got {self.init_x.shape}"
+        
         self.init_y = torch.empty((0, 1), dtype=torch.double)
         self.init_y_var = torch.empty((0, 1), dtype=torch.double)
         self.best_init_y = float("-inf")
@@ -144,6 +145,7 @@ class SAASBayesianOptimizer():
                 return None
             
             # convert the new candidates for experimental use
+            new_candidates = new_candidates.reshape(1, self.n_params)
             x_point = self.denormalize(new_candidates)
             # append the data set with the new candidate
             self.init_x = torch.cat((self.init_x, new_candidates))
@@ -177,7 +179,7 @@ class SAASBayesianOptimizer():
                                  ))  # update y-values
         
         # add small noise floor for numerical stability in GP fitting
-        noise_floor = 1e-6
+        noise_floor = 1e-3
         obs_var = max(std_dev**2, noise_floor)
         self.init_y_var = torch.cat((self.init_y_var, 
                                      torch.tensor(obs_var, dtype=torch.double).reshape(1, 1)
@@ -240,11 +242,11 @@ class SAASBayesianOptimizer():
         # find where the best values occurred
         best_x, best_y = self.best() # in physical units
 
-        # denormalize init_x and flatten init_y 
+        # denormalize init_x before comparing
         all_x_phys = np.array([self.denormalize(self.init_x[i]) for i in range(len(self.init_x))])
+        # flatten init_y for comparison 
         all_y = self.init_y.numpy().flatten()
 
-        # get recent 5 points and values for convergence check
         recent_x = all_x_phys[-5:]
         recent_y = all_y[-5:]
 
@@ -260,6 +262,19 @@ class SAASBayesianOptimizer():
         if max_x_delta <= self._xatol and max_f_delta <= self._fatol:
             self._termination_reason = "converged"
 
+    def get_kernel(self):
+        """
+        Defines a Matern kernel within a ScaleKernel wrapper.
+
+        Outputs:
+            - covar_module : learned output variance
+        """
+        matern_kernel = MaternKernel(nu=2.5, ard_num_dims=self.init_x.shape[-1])
+
+        # obtain output variance
+        covar_module = ScaleKernel(matern_kernel)
+
+        return covar_module
 
     def build_surrogate_model(self):
         """
@@ -322,7 +337,10 @@ class SAASBayesianOptimizer():
         # create the GP models
         model = self.build_surrogate_model()
 
-        try: # Attempt to fit the model for hyperparameter optimization
+        # fit the model for hyperparameter optimization
+        # TODO: This can fail !!! wrap it in a try and handle it somewhow
+        
+        try: # Attempt to fit the model
             # sample posterior hyperparameters directly via HMC/NUTS.
             fit_fully_bayesian_model_nuts( 
                     model,
@@ -454,6 +472,7 @@ class SAASBayesianOptimizer():
         # x = x_phy.detach().cpu().numpy().astype(np.float32)
 
         return x
+
 
 
 

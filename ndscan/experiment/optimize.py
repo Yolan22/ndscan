@@ -150,7 +150,7 @@ class OptimizeRunner(HasEnvironment):
                             num_points_recorded = new_count
 
                         if len(current_objective_samples) >= repeats_per_point:
-                            objective_value = _aggregate_objective_samples(
+                            objective_value , objective_std_dev = _aggregate_objective_samples(
                                 current_objective_samples[:repeats_per_point],
                                 spec.acquisition.averaging_method,
                             )
@@ -216,9 +216,9 @@ class OptimizeRunner(HasEnvironment):
 
 def _aggregate_objective_samples(samples: list[float], method: str) -> float:
     if method == "mean":
-        return float(np.mean(samples))
+        return float(np.mean(samples)), float(np.std(samples))
     if method == "median":
-        return float(np.median(samples))
+        return float(np.median(samples)), float(np.std(samples))
     raise ValueError(f"Unsupported optimisation averaging method '{method}'")
 
 

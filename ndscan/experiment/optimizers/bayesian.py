@@ -8,7 +8,7 @@ import numpy.typing as npt
 # import ML libraries
 from random import randint
 import torch
-from botorch.acquisition.analytic import LogExpectedImprovement
+from botorch.acquisition.logei import qLogExpectedImprovement
 from botorch.acquisition.monte_carlo import (
     qExpectedImprovement,
     qProbabilityOfImprovement,
@@ -38,7 +38,7 @@ class BayesianOptimizerOptimizeAlgorithmSpec(OptimizeAlgorithmSpec):
     user_seed: int = -1
 
 
-class BayesianOptimizer(Optimizer):
+class BayesianOptimizer():
     """
     Sequential ask/tell Bayesian Optimization implementation.
 
@@ -95,6 +95,8 @@ class BayesianOptimizer(Optimizer):
 
         # initialize training dataset
         self.init_x = torch.from_numpy(self.normalize(self.x)).double()
+        assert self.init_x.ndim == 2, f"init_x must be 2D, got {self.init_x.shape}"
+        
         self.init_y = torch.empty((0, 1), dtype=torch.double)
         self.init_y_var = torch.empty((0, 1), dtype=torch.double)
         self.best_init_y = float("-inf")
@@ -138,6 +140,7 @@ class BayesianOptimizer(Optimizer):
                 return None
             
             # convert the new candidates for experimental use
+            new_candidates = new_candidates.reshape(1, self.n_params)
             x_point = self.denormalize(new_candidates)
             # append the data set with the new candidate
             self.init_x = torch.cat((self.init_x, new_candidates))
@@ -171,7 +174,7 @@ class BayesianOptimizer(Optimizer):
                                  ))  # update y-values
         
         # add small noise floor for numerical stability in GP fitting
-        noise_floor = 1e-6
+        noise_floor = 1e-3
         obs_var = max(std_dev**2, noise_floor)
         self.init_y_var = torch.cat((self.init_y_var, 
                                      torch.tensor(obs_var, dtype=torch.double).reshape(1, 1)
@@ -308,7 +311,7 @@ class BayesianOptimizer(Optimizer):
         if self.acq_func_type == "EI":
             acq_func = qExpectedImprovement(model=model, best_f=self.best_init_y)
         elif self.acq_func_type == "logEI":
-            acq_func = LogExpectedImprovement(model=model, best_f=self.best_init_y)
+            acq_func = qLogExpectedImprovement(model=model, best_f=self.best_init_y)
         elif self.acq_func_type == "UCB":
             acq_func = qUpperConfidenceBound(model=model, beta=0.05)
         elif self.acq_func_type == "PI":
