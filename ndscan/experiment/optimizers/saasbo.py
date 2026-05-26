@@ -185,7 +185,7 @@ class SAASBayesianOptimizer(Optimizer):
                                      torch.tensor(obs_var, dtype=torch.double).reshape(1, 1)
                                      )) # update y-variances
          # obtain the best point so far
-        self.best_init_y = self.init_y.max().item()
+        self.best_init_y = self.init_y.min().item()
         
         if self.init_y.numel() > self.n_init:  # only check after enough data
             # check for convergence 
@@ -210,7 +210,7 @@ class SAASBayesianOptimizer(Optimizer):
             return None
 
         # select the single best observation
-        best_idx = int(torch.argmax(self.init_y).item())
+        best_idx = int(torch.argmin(self.init_y).item())
 
         # get model parameters at this index
         best_x_norm = self.init_x[best_idx]
@@ -225,9 +225,9 @@ class SAASBayesianOptimizer(Optimizer):
         if self.init_y.numel() == 0:
             return None
 
-        best_idx = int(torch.argmax(self.init_y).item())
+        best_idx = int(torch.argmin(self.init_y).item())
         best_var = self.init_y_var[best_idx].item()
-        return float(np.sqrt(max(best_var, 0.0)))
+        return float(np.sqrt(min(best_var, 0.0)))
 
     def termination_reason(self) -> str | None:
         """Return the termination reason, or ``None`` while the optimiser is active."""
