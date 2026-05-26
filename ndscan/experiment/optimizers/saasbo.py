@@ -179,7 +179,7 @@ class SAASBayesianOptimizer(Optimizer):
                                  ))  # update y-values
         
         # add small noise floor for numerical stability in GP fitting
-        noise_floor = 1e-3
+        noise_floor = 1e-6
         obs_var = max(std_dev**2, noise_floor)
         self.init_y_var = torch.cat((self.init_y_var, 
                                      torch.tensor(obs_var, dtype=torch.double).reshape(1, 1)
@@ -187,7 +187,7 @@ class SAASBayesianOptimizer(Optimizer):
          # obtain the best point so far
         self.best_init_y = self.init_y.max().item()
         
-        if self.init_y.numel() > self.n_params:  # only check after enough data
+        if self.init_y.numel() > self.n_init:  # only check after enough data
             # check for convergence 
             self._maybe_terminate()
 

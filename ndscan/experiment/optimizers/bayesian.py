@@ -20,11 +20,13 @@ from botorch.optim import optimize_acqf
 from gpytorch.kernels import MaternKernel, ScaleKernel
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from scipy.stats.qmc import LatinHypercube, scale
+from botorch.models.transforms import Standardize
 
 from .base import (
     AlgorithmParameter,
     OptimizeAlgorithmSpec,
     Optimizer,
+    OptimizeAcquisitionSpec,
     register_algorithm,
 )
 
@@ -37,8 +39,13 @@ class BayesianOptimizerOptimizeAlgorithmSpec(OptimizeAlgorithmSpec):
     n_init: int = 50
     user_seed: int = -1
 
+@dataclass
+class BayesianOptimizerOptimizeAcquisitionSpec(OptimizeAcquisitionSpec):
+    num_repeats_per_point: int = 3
+    averaging_method: str = "mean"
+    max_evals: int = 100
 
-class BayesianOptimizer():
+class BayesianOptimizer(Optimizer):
     """
     Sequential ask/tell Bayesian Optimization implementation.
 
@@ -57,7 +64,7 @@ class BayesianOptimizer():
         upper_bounds: tuple[float, ...],  # upper bounds of active params
         xatol: float,
         fatol: float,
-        n_init: int,  # no.of initial samples to generate
+        n_init: int,        # no.of initial samples to generate
         user_seed: int,  # user defined seed
     ):
 
@@ -72,6 +79,11 @@ class BayesianOptimizer():
         #    else:
         #        self.acq_func_type = acq_func_type
 
+        # if user_seed is not None :
+        #     self.user_seed = user_seed
+        # else: 
+        #     self.user_seed = randint(0, 42)  
+        
         self.user_seed = user_seed  # initial seed for reproducibility
         self.iter_idx = 0  # initial iteration index
         self.sample_idx = 0  # sample index
@@ -96,7 +108,7 @@ class BayesianOptimizer():
         # initialize training dataset
         self.init_x = torch.from_numpy(self.normalize(self.x)).double()
         assert self.init_x.ndim == 2, f"init_x must be 2D, got {self.init_x.shape}"
-        
+
         self.init_y = torch.empty((0, 1), dtype=torch.double)
         self.init_y_var = torch.empty((0, 1), dtype=torch.double)
         self.best_init_y = float("-inf")
@@ -119,7 +131,7 @@ class BayesianOptimizer():
         if self.iter_idx == 0:
             # initial sampling
             if self.sample_idx < self.n_init:
-                # make parameter dictionary
+                # get point from initial LHS samples
                 x_point = self.x[self.sample_idx, :]
                 # increment sample index
                 self.sample_idx += 1
@@ -174,15 +186,16 @@ class BayesianOptimizer():
                                  ))  # update y-values
         
         # add small noise floor for numerical stability in GP fitting
-        noise_floor = 1e-3
+        noise_floor = 1e-6
         obs_var = max(std_dev**2, noise_floor)
+        # obs_var = std_dev**2
         self.init_y_var = torch.cat((self.init_y_var, 
                                      torch.tensor(obs_var, dtype=torch.double).reshape(1, 1)
                                      )) # update y-variances
          # obtain the best point so far
         self.best_init_y = self.init_y.max().item()
         
-        if self.init_y.numel() > self.n_params:  # only check after enough data
+        if self.init_y.numel() > self.n_init:  # only check after enough data
             # check for convergence 
             self._maybe_terminate()
 
@@ -202,6 +215,7 @@ class BayesianOptimizer():
         """
         # calculate the total no.of elements in a tensor
         if self.init_y.numel() == 0: # PyTorch method
+            # no evaluations have been made yet
             return None
 
         # select the single best observation
@@ -289,6 +303,7 @@ class BayesianOptimizer():
             train_Y=self.init_y,
             train_Yvar=self.init_y_var,
             covar_module=covar_module,
+            outcome_transform=Standardize(m=1)  # m = 1 for single outputs
         )
 
         # define the marginal log likelihood
@@ -345,9 +360,9 @@ class BayesianOptimizer():
             candidates, _ = optimize_acqf(
                 acq_function=acq_func,
                 bounds=self.unit_bounds,
-                q=1,
-                num_restarts=10,
-                raw_samples=1024,
+                q=1,                # no.of candidates to generate in the batch
+                num_restarts=10,    # no.of starting points for multi-start optimization.
+                raw_samples=1024,   # no.of samples for initial condition generation
                 options={"batch_limit": 5, "maxiter": 200},
             )
             return True, candidates
@@ -364,7 +379,6 @@ class BayesianOptimizer():
             return False, None
 
     
-
     def make_physical_bounds(self):
         """Function returns the physical bounds for
         active parameters as torch tensors.
@@ -444,11 +458,11 @@ class BayesianOptimizer():
                 x = x_norm * (upper - lower) + lower
 
         Inputs:
-            - x_norm: ((n,d) tensor) input parameters between [0,1]
+            - x_norm: ((1,d) tensor) input parameters between [0,1]
             - phys_bounds : ((2,d) tensor) physical lower and upper bounds
 
         Outputs:
-            - x : ((n,d) array) input parameters in physical units
+            - x : ((1,d) array) input parameters in physical units
         """
         # denormalize [0,1] to physical units
         x_phy = (
