@@ -230,7 +230,7 @@ class BayesianOptimizer(Optimizer):
 
         best_idx = int(torch.argmin(self.init_y).item())
         best_var = self.init_y_var[best_idx].item()
-        return float(np.sqrt(max(best_var, 0.0)))
+        return float(np.sqrt(min(best_var, 0.0)))
 
     def termination_reason(self) -> str | None:
         """Return the termination reason, or ``None`` while the optimiser is active."""
