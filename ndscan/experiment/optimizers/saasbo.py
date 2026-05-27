@@ -182,7 +182,7 @@ class SAASBayesianOptimizer(Optimizer):
                                  ))  # update y-values (negated)
         
         # add small noise floor for numerical stability in GP fitting
-        noise_floor = 1e-6
+        noise_floor = 1e-3
         obs_var = max(std_dev**2, noise_floor)
         self.init_y_var = torch.cat((self.init_y_var, 
                                      torch.tensor(obs_var, dtype=torch.double).reshape(1, 1)
@@ -201,36 +201,37 @@ class SAASBayesianOptimizer(Optimizer):
         return self._termination_reason is not None
 
     def best(self) -> tuple[tuple[float, ...], float] | None:
-        """Returns the best point/value pair seen so far,
-        if any evaluations completed.
+            """Returns the best point/value pair seen so far,
+            if any evaluations completed.
 
-        Outputs:
-            - best_x : best parameters/point
-            - best_init_y : best objective function value
-        """
-        # calculate the total no.of elements in a tensor
-        if self.init_y.numel() == 0: # PyTorch method
-            return None
+            Outputs:
+                - best_x : best parameters/point
+                - best_init_y : best objective function value
+            """
+            # calculate the total no.of elements in a tensor
+            if self.init_y.numel() == 0: # PyTorch method
+                # no evaluations have been made yet
+                return None
 
-        # select the single best observation
-        best_idx = int(torch.argmin(self.init_y).item())
+            # select the single best observation
+            best_idx = int(torch.argmax(self.init_y).item())
 
-        # get model parameters at this index
-        best_x_norm = self.init_x[best_idx]
+            # get model parameters at this index
+            best_x_norm = self.init_x[best_idx]
 
-        # convert parameters back to physical units
-        best_x = self.denormalize(best_x_norm)
+            # convert parameters back to physical units
+            best_x = self.denormalize(best_x_norm)
 
-        return best_x, self.best_init_y
+            return best_x, -1*(self.best_init_y)
 
     def best_std(self) -> float | None:
         """Return the measured standard deviation for the current best point."""
         if self.init_y.numel() == 0:
             return None
 
-        best_idx = int(torch.argmin(self.init_y).item())
+        best_idx = int(torch.argmax(self.init_y).item())
         best_var = self.init_y_var[best_idx].item()
-        return float(np.sqrt(min(best_var, 0.0)))
+        return float(np.sqrt(np.maximum(best_var, 0.0)))
 
     def termination_reason(self) -> str | None:
         """Return the termination reason, or ``None`` while the optimiser is active."""
@@ -245,11 +246,14 @@ class SAASBayesianOptimizer(Optimizer):
         # find where the best values occurred
         best_x, best_y = self.best() # in physical units
 
-        # denormalize init_x before comparing
+        # change sign of best_y
+        best_y = -best_y
+        
+        # denormalize init_x and flatten init_y
         all_x_phys = np.array([self.denormalize(self.init_x[i]) for i in range(len(self.init_x))])
-        # flatten init_y for comparison 
         all_y = self.init_y.numpy().flatten()
-
+        
+        # get recent 5 points and values for convergence check
         recent_x = all_x_phys[-5:]
         recent_y = all_y[-5:]
 
