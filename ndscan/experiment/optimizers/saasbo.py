@@ -106,7 +106,7 @@ class SAASBayesianOptimizer(Optimizer):
         
         self.init_y = torch.empty((0, 1), dtype=torch.double)
         self.init_y_var = torch.empty((0, 1), dtype=torch.double)
-        self.best_init_y = float("-inf")
+        self.best_init_y = float("inf")
 
     def ask(self) -> tuple[float, ...]:
         """
