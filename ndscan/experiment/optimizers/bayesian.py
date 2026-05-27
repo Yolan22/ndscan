@@ -15,12 +15,15 @@ from botorch.acquisition.monte_carlo import (
     qUpperConfidenceBound,
 )
 from botorch.fit import fit_gpytorch_mll
-from botorch.models import SingleTaskGP
+from botorch.exceptions.errors import ModelFittingError
 from botorch.optim import optimize_acqf
+from botorch.optim.fit import fit_gpytorch_mll_torch
+from botorch.models import SingleTaskGP
 from gpytorch.kernels import MaternKernel, ScaleKernel
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from scipy.stats.qmc import LatinHypercube, scale
 from botorch.models.transforms import Standardize
+
 
 from .base import (
     AlgorithmParameter,
@@ -35,7 +38,7 @@ from .base import (
 class BayesianOptimizerOptimizeAlgorithmSpec(OptimizeAlgorithmSpec):
     xatol: float = 1e-3
     fatol: float = 1e-3
-    n_init: int = 50
+    n_init: int = 10
     user_seed: int = -1
 
 
@@ -105,7 +108,7 @@ class BayesianOptimizer(Optimizer):
 
         self.init_y = torch.empty((0, 1), dtype=torch.double)
         self.init_y_var = torch.empty((0, 1), dtype=torch.double)
-        self.best_init_y = float("-inf")
+        self.best_init_y = float("inf")
 
     def ask(self) -> tuple[float, ...]:
         """
@@ -176,18 +179,18 @@ class BayesianOptimizer(Optimizer):
             return None
         # convert to torch tensors and append the data set with the new point(s)
         self.init_y = torch.cat((self.init_y,
-                                 torch.tensor(value, dtype=torch.double).reshape(1, 1)
-                                 ))  # update y-values
+                                 torch.tensor(-value, dtype=torch.double).reshape(1, 1)
+                                 ))  # update y-values (negated)
         
         # add small noise floor for numerical stability in GP fitting
-        noise_floor = 1e-6
+        noise_floor = 1e-3
         obs_var = max(std_dev**2, noise_floor)
         # obs_var = std_dev**2
         self.init_y_var = torch.cat((self.init_y_var, 
                                      torch.tensor(obs_var, dtype=torch.double).reshape(1, 1)
                                      )) # update y-variances
          # obtain the best point so far
-        self.best_init_y = self.init_y.min().item()
+        self.best_init_y = self.init_y.max().item()
         
         if self.init_y.numel() > self.n_init:  # only check after enough data
             # check for convergence 
@@ -213,7 +216,7 @@ class BayesianOptimizer(Optimizer):
             return None
 
         # select the single best observation
-        best_idx = int(torch.argmin(self.init_y).item())
+        best_idx = int(torch.argmax(self.init_y).item())
 
         # get model parameters at this index
         best_x_norm = self.init_x[best_idx]
@@ -228,9 +231,9 @@ class BayesianOptimizer(Optimizer):
         if self.init_y.numel() == 0:
             return None
 
-        best_idx = int(torch.argmin(self.init_y).item())
+        best_idx = int(torch.argmax(self.init_y).item())
         best_var = self.init_y_var[best_idx].item()
-        return float(np.sqrt(min(best_var, 0.0)))
+        return float(np.sqrt(np.maximum(best_var, 0.0)))
 
     def termination_reason(self) -> str | None:
         """Return the termination reason, or ``None`` while the optimiser is active."""
@@ -316,15 +319,20 @@ class BayesianOptimizer(Optimizer):
         Outputs:
             - acq_func : the acquisition function
         """
+
+        # standardize the best observed value 
+        best_f_standardized = (self.best_init_y - model.outcome_transform.means.item()) \
+                       / model.outcome_transform.stdvs.item()
+        
         # initialize class for the different AF's
         if self.acq_func_type == "EI":
-            acq_func = qExpectedImprovement(model=model, best_f=self.best_init_y)
+            acq_func = qExpectedImprovement(model=model, best_f=best_f_standardized)
         elif self.acq_func_type == "logEI":
-            acq_func = qLogExpectedImprovement(model=model, best_f=self.best_init_y)
+            acq_func = qLogExpectedImprovement(model=model, best_f=best_f_standardized)
         elif self.acq_func_type == "UCB":
             acq_func = qUpperConfidenceBound(model=model, beta=0.05)
         elif self.acq_func_type == "PI":
-            acq_func = qProbabilityOfImprovement(model=model, best_f=self.best_init_y)
+            acq_func = qProbabilityOfImprovement(model=model, best_f=best_f_standardized)
         else:
             raise ValueError("Invalid acquisition function type")
         return acq_func
@@ -345,22 +353,19 @@ class BayesianOptimizer(Optimizer):
 
         try: # Attempt to fit the model for hyperparameter optimization
 
-            fit_gpytorch_mll(mll)  # uses an Adam optimizer
+            fit_gpytorch_mll(mll)  # uses L-BFGS-B optimizer
+        
+        except ModelFittingError:
+            print("L-BFGS-B failed, falling back to Adam...")
             
-            # create the acquisition function
-            acq_func = self.get_acquisition_function(model)
-
-            # find candidates
-            candidates, _ = optimize_acqf(
-                acq_function=acq_func,
-                bounds=self.unit_bounds,
-                q=1,                # no.of candidates to generate in the batch
-                num_restarts=10,    # no.of starting points for multi-start optimization.
-                raw_samples=1024,   # no.of samples for initial condition generation
-                options={"batch_limit": 5, "maxiter": 200},
-            )
-            return True, candidates
-
+            try: 
+                fit_gpytorch_mll_torch(mll, step_limit=300)             
+            
+            except Exception as e : 
+                print(f"Adam optimizer also failed. {e}")
+                return False, None
+            
+            
         except ValueError as ve:
             # handle common data-related errors
             print(f"ValueError during fitting: {ve}")
@@ -371,6 +376,21 @@ class BayesianOptimizer(Optimizer):
             print(f"Unexpected error during model fitting: {e}")
             traceback.print_exc()
             return False, None
+        
+        # create the acquisition function
+        acq_func = self.get_acquisition_function(model)
+
+        # find candidates ( assuming one optimizer is successful)
+        candidates, _ = optimize_acqf(
+            acq_function=acq_func,
+            bounds=self.unit_bounds,
+            q=1,                # no.of candidates to generate in the batch
+            num_restarts=10,    # no.of starting points for multi-start optimization.
+            raw_samples=1024,   # no.of samples for initial condition generation
+            options={"batch_limit": 5, "maxiter": 200},
+        )
+
+        return True, candidates
 
     
     def make_physical_bounds(self):

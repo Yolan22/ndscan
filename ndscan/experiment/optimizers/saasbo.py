@@ -19,8 +19,10 @@ from gpytorch.kernels import MaternKernel, ScaleKernel
 from scipy.stats.qmc import LatinHypercube, scale
 
 # for SAASBO implementation 
-from botorch import fit_fully_bayesian_model_nuts
+from botorch.exceptions.errors import ModelFittingError
 from botorch.optim import optimize_acqf
+from botorch.optim.fit import fit_gpytorch_mll_torch
+from botorch.fit import fit_gpytorch_mll
 from botorch.acquisition.logei import qLogExpectedImprovement
 from botorch.models.fully_bayesian import SaasFullyBayesianSingleTaskGP
 from botorch.models.transforms import Standardize
@@ -175,8 +177,8 @@ class SAASBayesianOptimizer(Optimizer):
             return None
         # convert to torch tensors and append the data set with the new point(s)
         self.init_y = torch.cat((self.init_y,
-                                 torch.tensor(value, dtype=torch.double).reshape(1, 1)
-                                 ))  # update y-values
+                                 torch.tensor(-value, dtype=torch.double).reshape(1, 1)
+                                 ))  # update y-values (negated)
         
         # add small noise floor for numerical stability in GP fitting
         noise_floor = 1e-6
@@ -262,20 +264,6 @@ class SAASBayesianOptimizer(Optimizer):
         if max_x_delta <= self._xatol and max_f_delta <= self._fatol:
             self._termination_reason = "converged"
 
-    def get_kernel(self):
-        """
-        Defines a Matern kernel within a ScaleKernel wrapper.
-
-        Outputs:
-            - covar_module : learned output variance
-        """
-        matern_kernel = MaternKernel(nu=2.5, ard_num_dims=self.init_x.shape[-1])
-
-        # obtain output variance
-        covar_module = ScaleKernel(matern_kernel)
-
-        return covar_module
-
     def build_surrogate_model(self):
         """
         Builds the surrogate model (Heteroscedastic GP regressor)
@@ -306,15 +294,20 @@ class SAASBayesianOptimizer(Optimizer):
         Outputs:
             - acq_func : the acquisition function
         """
+
+        # standardize the best observed value 
+        best_f_standardized = (self.best_init_y - model.outcome_transform.means.item()) \
+                       / model.outcome_transform.stdvs.item()
+        
         # initialize class for the different AF's
         if self.acq_func_type == "EI":
-            acq_func = qExpectedImprovement(model=model, best_f=self.best_init_y)
+            acq_func = qExpectedImprovement(model=model, best_f=best_f_standardized)
         elif self.acq_func_type == "logEI":
-            acq_func = qLogExpectedImprovement(model=model, best_f=self.best_init_y)
+            acq_func = qLogExpectedImprovement(model=model, best_f=best_f_standardized)
         elif self.acq_func_type == "UCB":
             acq_func = qUpperConfidenceBound(model=model, beta=0.05)
         elif self.acq_func_type == "PI":
-            acq_func = qProbabilityOfImprovement(model=model, best_f=self.best_init_y)
+            acq_func = qProbabilityOfImprovement(model=model, best_f=best_f_standardized)
         else:
             raise ValueError("Invalid acquisition function type")
         return acq_func
@@ -324,45 +317,31 @@ class SAASBayesianOptimizer(Optimizer):
         """
         Obtains the next point(s) to sample in the BO loop.
         It does the following:
-            - Builds the surrogate model (GP)
-            - Uses fully Bayesian inference for fitting
+            - Builds and trains the surrogate model (GP)
             - Creates the Acquistion Function (AF)
-            - Safely fit a model 
             - Find candidates for the next point to sample by optimizing the AF.
 
         Outputs :
-            - fit_success: boolean indicating whether the model was fitted successfully
             - candidates: candidate(s) found while using a given AF
         """
         # create the GP models
-        model = self.build_surrogate_model()
+        model, mll = self.build_surrogate_model()
 
-        # fit the model for hyperparameter optimization
-        # TODO: This can fail !!! wrap it in a try and handle it somewhow
+        try: # Attempt to fit the model for hyperparameter optimization
+
+            fit_gpytorch_mll(mll)  # uses L-BFGS-B optimizer
         
-        try: # Attempt to fit the model
-            # sample posterior hyperparameters directly via HMC/NUTS.
-            fit_fully_bayesian_model_nuts( 
-                    model,
-                    warmup_steps=self.warmup_steps,
-                    num_samples=self.num_mcmc_samples,
-                    thinning=self.thinning,
-                    disable_progbar=True,
-                ) 
-            # create the acquisition function
-            acq_func = self.get_acquisition_function(model)
-
-            # find candidates
-            candidates, _ = optimize_acqf(
-                acq_function=acq_func,
-                bounds=self.unit_bounds,
-                q=1,
-                num_restarts=10,
-                raw_samples=1024,
-                options={"batch_limit": 5, "maxiter": 200},
-            )
-            return True, candidates
-
+        except ModelFittingError:
+            print("L-BFGS-B failed, falling back to Adam...")
+            
+            try: 
+                fit_gpytorch_mll_torch(mll, step_limit=300)             
+            
+            except Exception as e : 
+                print(f"Adam optimizer also failed. {e}")
+                return False, None
+            
+            
         except ValueError as ve:
             # handle common data-related errors
             print(f"ValueError during fitting: {ve}")
@@ -373,6 +352,21 @@ class SAASBayesianOptimizer(Optimizer):
             print(f"Unexpected error during model fitting: {e}")
             traceback.print_exc()
             return False, None
+        
+        # create the acquisition function
+        acq_func = self.get_acquisition_function(model)
+
+        # find candidates ( assuming one optimizer is successful)
+        candidates, _ = optimize_acqf(
+            acq_function=acq_func,
+            bounds=self.unit_bounds,
+            q=1,                # no.of candidates to generate in the batch
+            num_restarts=10,    # no.of starting points for multi-start optimization.
+            raw_samples=1024,   # no.of samples for initial condition generation
+            options={"batch_limit": 5, "maxiter": 200},
+        )
+
+        return True, candidates
 
 
     def make_physical_bounds(self):
