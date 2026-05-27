@@ -224,7 +224,7 @@ class BayesianOptimizer(Optimizer):
         # convert parameters back to physical units
         best_x = self.denormalize(best_x_norm)
 
-        return best_x, self.best_init_y
+        return best_x, -1*(self.best_init_y)
 
     def best_std(self) -> float | None:
         """Return the measured standard deviation for the current best point."""
@@ -248,6 +248,9 @@ class BayesianOptimizer(Optimizer):
         # find where the best values occurred
         best_x, best_y = self.best() # in physical units
 
+        # change sign of best_y
+        best_y = -best_y
+        
         # denormalize init_x and flatten init_y
         all_x_phys = np.array([self.denormalize(self.init_x[i]) for i in range(len(self.init_x))])
         all_y = self.init_y.numpy().flatten()

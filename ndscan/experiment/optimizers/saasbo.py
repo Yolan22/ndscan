@@ -19,6 +19,7 @@ from gpytorch.kernels import MaternKernel, ScaleKernel
 from scipy.stats.qmc import LatinHypercube, scale
 
 # for SAASBO implementation 
+from botorch import fit_fully_bayesian_model_nuts
 from botorch.exceptions.errors import ModelFittingError
 from botorch.optim import optimize_acqf
 from botorch.optim.fit import fit_gpytorch_mll_torch
@@ -317,31 +318,42 @@ class SAASBayesianOptimizer(Optimizer):
         """
         Obtains the next point(s) to sample in the BO loop.
         It does the following:
-            - Builds and trains the surrogate model (GP)
+            - Builds the surrogate model (GP)
+            - Uses fully Bayesian inference for fitting
             - Creates the Acquistion Function (AF)
+            - Safely fit a model 
             - Find candidates for the next point to sample by optimizing the AF.
 
         Outputs :
+            - fit_success: boolean indicating whether the model was fitted successfully
             - candidates: candidate(s) found while using a given AF
         """
         # create the GP models
-        model, mll = self.build_surrogate_model()
+        model = self.build_surrogate_model()
 
         try: # Attempt to fit the model for hyperparameter optimization
+            # sample posterior hyperparameters directly via HMC/NUTS.
+            fit_fully_bayesian_model_nuts( 
+                    model,
+                    warmup_steps=self.warmup_steps,
+                    num_samples=self.num_mcmc_samples,
+                    thinning=self.thinning,
+                    disable_progbar=True,
+                ) 
+            # create the acquisition function
+            acq_func = self.get_acquisition_function(model)
 
-            fit_gpytorch_mll(mll)  # uses L-BFGS-B optimizer
-        
-        except ModelFittingError:
-            print("L-BFGS-B failed, falling back to Adam...")
-            
-            try: 
-                fit_gpytorch_mll_torch(mll, step_limit=300)             
-            
-            except Exception as e : 
-                print(f"Adam optimizer also failed. {e}")
-                return False, None
-            
-            
+            # find candidates
+            candidates, _ = optimize_acqf(
+                acq_function=acq_func,
+                bounds=self.unit_bounds,
+                q=1,
+                num_restarts=10,
+                raw_samples=1024,
+                options={"batch_limit": 5, "maxiter": 200},
+            )
+            return True, candidates
+
         except ValueError as ve:
             # handle common data-related errors
             print(f"ValueError during fitting: {ve}")
@@ -352,21 +364,6 @@ class SAASBayesianOptimizer(Optimizer):
             print(f"Unexpected error during model fitting: {e}")
             traceback.print_exc()
             return False, None
-        
-        # create the acquisition function
-        acq_func = self.get_acquisition_function(model)
-
-        # find candidates ( assuming one optimizer is successful)
-        candidates, _ = optimize_acqf(
-            acq_function=acq_func,
-            bounds=self.unit_bounds,
-            q=1,                # no.of candidates to generate in the batch
-            num_restarts=10,    # no.of starting points for multi-start optimization.
-            raw_samples=1024,   # no.of samples for initial condition generation
-            options={"batch_limit": 5, "maxiter": 200},
-        )
-
-        return True, candidates
 
 
     def make_physical_bounds(self):
