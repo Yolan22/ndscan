@@ -164,11 +164,13 @@ class BayesianOptimizer(Optimizer):
     ) -> None:
         """
         Runs the experiment for the given parameters by :meth:`ask`
-        and updates the measured objective value and its standard deviation.
+        and updates the measured objective mean value and its standard 
+        deviation.
 
         Inputs:
             - x_point : ((1,d) array) input parameters
-            - value : ((1,2) array) objective function mean and std
+            - value : (float) objective function mean
+            - std_dev : (float) objective function standard deviation
 
         Outputs:
             - None. Updates the observations
@@ -180,10 +182,10 @@ class BayesianOptimizer(Optimizer):
         # convert to torch tensors and append the data set with the new point(s)
         self.init_y = torch.cat((self.init_y,
                                  torch.tensor(-value, dtype=torch.double).reshape(1, 1)
-                                 ))  # update y-values (negated)
+                                 ))  # update y-values
         
         # add small noise floor for numerical stability in GP fitting
-        noise_floor = 1e-3
+        noise_floor = 1e-4
         obs_var = max(std_dev**2, noise_floor)
         # obs_var = std_dev**2
         self.init_y_var = torch.cat((self.init_y_var, 
@@ -208,7 +210,7 @@ class BayesianOptimizer(Optimizer):
 
         Outputs:
             - best_x : best parameters/point
-            - best_init_y : best objective function value
+            - best_y : best objective function value
         """
         # calculate the total no.of elements in a tensor
         if self.init_y.numel() == 0: # PyTorch method
@@ -224,7 +226,10 @@ class BayesianOptimizer(Optimizer):
         # convert parameters back to physical units
         best_x = self.denormalize(best_x_norm)
 
-        return best_x, -1*(self.best_init_y)
+        # get the best observed value (negated back)
+        best_y = -self.best_init_y
+
+        return best_x, best_y
 
     def best_std(self) -> float | None:
         """Return the measured standard deviation for the current best point."""
@@ -246,11 +251,8 @@ class BayesianOptimizer(Optimizer):
         """
 
         # find where the best values occurred
-        best_x, best_y = self.best() # in physical units
+        best_x, _ = self.best() # in physical units
 
-        # change sign of best_y
-        best_y = -best_y
-        
         # denormalize init_x and flatten init_y
         all_x_phys = np.array([self.denormalize(self.init_x[i]) for i in range(len(self.init_x))])
         all_y = self.init_y.numpy().flatten()
@@ -265,7 +267,7 @@ class BayesianOptimizer(Optimizer):
         )
         
         # find max change in y
-        max_f_delta = max(abs(value - best_y) for value in recent_y)
+        max_f_delta = max(abs(value - self.best_init_y) for value in recent_y)
         
         # check if both changes are within the specified tolerances
         if max_x_delta <= self._xatol and max_f_delta <= self._fatol:
@@ -493,7 +495,7 @@ class BayesianOptimizer(Optimizer):
         # x = x_phy.detach().cpu().numpy().astype(np.float32)
 
         return x
-
+    
 
 register_algorithm(
     "bayesian",

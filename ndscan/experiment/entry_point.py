@@ -69,6 +69,7 @@ from .scan_runner import (
 )
 from .utils import dump_json, is_kernel, to_metadata_broadcast_type
 
+from .optimize import (OptimizeSpec,)
 __all__ = [
     "ArgumentInterface",
     "TopLevelRunner",
