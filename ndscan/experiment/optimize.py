@@ -58,7 +58,7 @@ def create_optimizer(spec: OptimizeSpec) -> Optimizer:
     algorithm_kind = spec.algorithm.kind
     algo_info = ALGORITHM_REGISTRY.get(algorithm_kind)
     if algo_info is None:
-        raise ValueError(f"Unsupported optimisation algorithm '{algorithm_kind}'")
+        raise ValueError(f"Unsupported optimization algorithm '{algorithm_kind}'")
 
     optimizer_cls = algo_info["optimizer_cls"]
 

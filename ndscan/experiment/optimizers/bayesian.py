@@ -57,10 +57,8 @@ class BayesianOptimizerOptimizeAlgorithmSpec(OptimizeAlgorithmSpec):
     fatol: float = 1e-3
     n_init: int = 10
     user_seed: int = -1
-    max_evals: int = 100
 
-
-class BayesianOptimizer (Optimizer):
+class BayesianOptimizer(Optimizer):
     """
     Sequential ask/tell Bayesian Optimization implementation.
 
@@ -81,18 +79,13 @@ class BayesianOptimizer (Optimizer):
         fatol: float,                       # tolerance for change in f(x)
         n_init: int,                        # no.of initial samples to generate
         user_seed: int,                     # user defined seed
-        param_idx: int,                     # index of parameter to vary along the slice for plotting
-        max_evals : int,                    # maximum no.of evaluations
+        # robust_mode: bool,                # use simple/robust optimizer
     ):
 
         # select the acquisition function type
         self.acq_func_type = "logEI"
-
-        #    if acq_func_type is None:
-        #        self.acq_func_type = "logEI"
-        #    else:
-        #        self.acq_func_type = acq_func_type
-  
+        
+        # simulation parameters
         self.user_seed = user_seed                  # initial seed for reproducibility
         self.iter_idx = 0                           # initial iteration index
         self.sample_idx = 0                         # sample index
@@ -113,12 +106,12 @@ class BayesianOptimizer (Optimizer):
         self._xatol = xatol
         self._fatol = fatol
 
-        # simulation parameters
-        self.n_init = int(n_init * np.sqrt(self.n_params))
-        self.max_evals = max_evals
-       
-
         # generate initial parameter input using LHS sampling
+        if  self.n_params >= 3 : 
+            self.n_init = int(n_init * np.sqrt(self.n_params))
+        else: 
+            self.n_init = self.n_params * n_init
+
         self.x = self.LHS_sampler()
 
         # initialize training dataset
@@ -132,12 +125,13 @@ class BayesianOptimizer (Optimizer):
         # for tracking performance 
         self.n_test = 20
         self.fixed_values = None
-        self.param_idx = param_idx
         self.output_idx = 0
         self.z_score = 1.96         # 95% confidence interval
         self.time_accumulated = 0.0 # run time 
         
-
+        # self.noise_robust_mode = robust_mode   # change to True for real experiment
+        self.noise_robust_mode = False           # default 
+    
     def ask(self) -> tuple[float, ...]:
         """
         Suggests the next candidate point to sample and
@@ -163,6 +157,7 @@ class BayesianOptimizer (Optimizer):
                 self._num_asked += 1
                 return x_point
 
+            
             # stop sampling, begin optimization
             print("Initial sampling complete.")
             self.iter_idx = 1
@@ -213,7 +208,10 @@ class BayesianOptimizer (Optimizer):
                                  ))     # update y-values
         
         # add small noise floor for numerical stability in GP fitting
-        noise_floor = 1e-3
+        if  self.noise_robust_mode is True: 
+            noise_floor = 1e-3
+        else: 
+            noise_floor = 0.0
         obs_var = max(std_dev**2, noise_floor)
         self.init_y_var = torch.cat((self.init_y_var, 
                                      torch.tensor(obs_var, dtype=torch.double).reshape(1, 1)
@@ -238,8 +236,8 @@ class BayesianOptimizer (Optimizer):
         if any evaluations completed.
 
         Outputs:
-            - best_x : ((n, d) array) best parameters/point
-            - best_y : (float) best objective function value
+            - best_x : best parameters/point
+            - best_y : best objective function value
         """
         # calculate the total no.of elements in a tensor
         if self.init_y.numel() == 0: # PyTorch method
@@ -261,7 +259,6 @@ class BayesianOptimizer (Optimizer):
     def best_std(self) -> float | None:
         """
         Return the measured standard deviation for the current best point.
-        
         """
         if self.init_y.numel() == 0:
             return None
@@ -271,8 +268,6 @@ class BayesianOptimizer (Optimizer):
         return float(np.sqrt(np.maximum(best_var, 0.0)))
 
     def termination_reason(self) -> str | None:
-        if self._num_asked >= self.max_evals:
-            self._termination_reason = "Maximum evaluations reached"
         return self._termination_reason
 
     def _maybe_terminate(self) -> None:
@@ -283,10 +278,7 @@ class BayesianOptimizer (Optimizer):
         
         if self.iter_idx == 0:
             return  # don't check for termination during initial sampling
-        # if getattr(self, 'in_prefill', False):  # skip during pre-fill
-        #     return
         
-
         # find where the best values occurred
         best_x, best_y = self.best() # in physical units
 
@@ -305,31 +297,42 @@ class BayesianOptimizer (Optimizer):
         
         # find max change in y
         max_f_delta = max(abs(value - best_y) for value in recent_y)
-
+    
         # get best standard deviation
         best_y_std = self.best_std()
         self.dynamic_fatol = 2 * best_y_std  # dynamic fatol based on current noise level
+
+        if self.noise_robust_mode is True: 
+            fatol = self.dynamic_fatol
+        else:
+            fatol = self._fatol
       
         # check if both changes are within the specified tolerances
-        if max_x_delta <= self._xatol and max_f_delta <= self.dynamic_fatol:
+        if max_x_delta <= self._xatol and max_f_delta <= fatol:
+        # if max_x_delta <= self._xatol and max_f_delta <= self._fatol:
             self._termination_reason = "converged"
     
 
     def get_kernel(self):
         """
         Defines a Matern kernel within a ScaleKernel wrapper.
-            - Uses an ARD to give each dimension gets its own lengthscale
-            - Constrains the lengthscales for numerical stability
+        - Uses an ARD to give each dimension gets its own lengthscale
+        - Constrains the lengthscales for numerical stability
         
         Outputs:
             - covar_module : learned output variance
         """
-        matern_kernel = MaternKernel(nu=2.5, 
-                        ard_num_dims=self.n_params,                 # individual lengthscales 
-                        lengthscale_constraint=GreaterThan(1e-3),   # constrained lengthscales.
-                        lengthscale_prior=LogNormalPrior(-2.0, 1.0) # prior
-                        )
 
+        if self.noise_robust_mode is True:
+            matern_kernel = MaternKernel(nu=2.5,
+                                    ard_num_dims=self.n_params,                 # individual lengthscales 
+                                    lengthscale_constraint=GreaterThan(1e-3),   # constrained lengthscales.
+                                    lengthscale_prior=LogNormalPrior(-2.0, 1.0) # prior
+                                    )
+        else: 
+            matern_kernel = MaternKernel(nu=2.5, 
+                                    ard_num_dims=self.n_params,                
+                                    )
         # obtain output variance
         covar_module = ScaleKernel(matern_kernel)
 
@@ -357,14 +360,24 @@ class BayesianOptimizer (Optimizer):
         )
 
         # build GP model
-        self.model = SingleTaskGP(
-            train_X=self.train_x,
-            train_Y=self.train_y,
-            train_Yvar=self.train_y_var,
-            covar_module=covar_module,
-            outcome_transform=Standardize(m=1),  # m = 1 for single outputs
-            likelihood=likelihood,
-        )
+        if self.noise_robust_mode is True: 
+            # create robust model
+            self.model = SingleTaskGP(
+                train_X=self.train_x,
+                train_Y=self.train_y,
+                train_Yvar=self.train_y_var,
+                covar_module=covar_module,
+                outcome_transform=Standardize(m=1),  # m = 1 for single outputs
+                likelihood=likelihood,
+            )
+        else: 
+            # create simple model
+            self.model = SingleTaskGP(
+                train_X=self.train_x,
+                train_Y=self.train_y,
+                covar_module=covar_module,
+                outcome_transform=Standardize(m=1),  # m = 1 for single outputs
+            )
 
         # define the marginal log likelihood
         self.mll = ExactMarginalLogLikelihood(self.model.likelihood, self.model)
@@ -414,7 +427,7 @@ class BayesianOptimizer (Optimizer):
                 model=self.model, 
                 best_f=best_f_standardized
         )
-        elif self.acq_func_type == "logEI":
+        elif self.acq_func_type == "logEI" and self.noise_robust_mode is True:
                 acq_func = qLogExpectedImprovement(
                 model=self.model, 
                 best_f=best_f_standardized,
@@ -422,8 +435,12 @@ class BayesianOptimizer (Optimizer):
                 # objective=objective,
                 # constraints=[self.constraint_callable],
         )
+        elif self.acq_func_type == "logEI" and self.noise_robust_mode is False:
+                acq_func = qLogExpectedImprovement(
+                model=self.model, 
+                best_f=best_f_standardized,
+        )
             
-    
         elif self.acq_func_type == "logNEI":
                 acq_func = qLogNoisyExpectedImprovement(
                 model=self.model, 
@@ -498,13 +515,18 @@ class BayesianOptimizer (Optimizer):
         # create the acquisition function
         acq_func = self.get_acquisition_function()
 
+        if self.noise_robust_mode is True:
+            raw_samples = 500
+        else: 
+            raw_samples = 1024
+        
         # find candidates ( assuming one optimizer is successful)
         candidates, _ = optimize_acqf(
             acq_function=acq_func,
             bounds=self.unit_bounds,
             q=1,                # no.of candidates to generate in the batch
             num_restarts=10,    # no.of starting points for multi-start optimization.
-            raw_samples=500,    # no.of samples for initial condition generation (256 - 1024)
+            raw_samples=raw_samples,    # no.of samples for initial condition generation (256 - 1024)
             options={"batch_limit": 5, "maxiter": 200},
         )
 
@@ -692,16 +714,7 @@ register_algorithm(
             default=-1,
             step=1,
             tooltip="User defined seed for initial sampling. If -1, do random selection.",
-        ),
-         AlgorithmParameter(
-            name="max_evals",
-            label="max_evals",
-            minimum=100,
-            maximum=120,
-            default=100,
-            step=1,
-            tooltip="Maximum evaluations used in the main loop",
-        ),
+        )
     ],
     spec_cls=BayesianOptimizerOptimizeAlgorithmSpec,
     optimizer_cls=BayesianOptimizer,
