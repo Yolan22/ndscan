@@ -65,6 +65,7 @@ class SubscanModel(ScanModel):
             parent.schema_revision,
             parent.context,
             schema.get("execution_mode", "scan"),
+            schema.get("objective"),
         )
         self._channel_schemata = schema["channels"]
 
