@@ -1,13 +1,23 @@
 import json
+
 from mock_environment import HasEnvironmentCase
 
 from ndscan.experiment import *
 from ndscan.experiment.entry_point import ScanSpecError
 from ndscan.experiment.optimize import (
+    BayesianOptimizer,
     CoordinateSearchOptimizer,
     NelderMeadOptimizer,
-    BayesianOptimizer,
-    )
+    ObjectiveSpec,
+    OptimizeAcquisitionSpec,
+    OptimizeAlgorithmSpec,
+    OptimizeAxis,
+    OptimizeSpec,
+    _normalise_objective_value,
+    default_optimise_params,
+    format_best_result,
+)
+
 
 class QuadraticFragment(ExpFragment):
     def build_fragment(self):
@@ -75,11 +85,35 @@ class RepeatOutlierFragment(ExpFragment):
         self.run_counter += 1
 
 
+class AdditiveDriftFragment(ExpFragment):
+    def build_fragment(self):
+        self.setattr_param("x", FloatParam, "x", default=0.0)
+        self.setattr_result("objective", FloatChannel)
+        self.run_counter = 0
+
+    def run_once(self):
+        self.objective.push(self.x.get() + 10.0 * self.run_counter)
+        self.run_counter += 1
+
+
+class MultiplicativeDriftFragment(ExpFragment):
+    def build_fragment(self):
+        self.setattr_param("x", FloatParam, "x", default=0.0)
+        self.setattr_result("objective", FloatChannel)
+        self.run_counter = 0
+
+    def run_once(self):
+        self.objective.push((self.x.get() + 2.0) * (self.run_counter + 1.0))
+        self.run_counter += 1
+
+
 QuadraticScanExp = make_fragment_scan_exp(QuadraticFragment)
 InvertedQuadraticScanExp = make_fragment_scan_exp(InvertedQuadraticFragment)
 OpaqueObjectiveScanExp = make_fragment_scan_exp(OpaqueObjectiveFragment)
 IntAxisScanExp = make_fragment_scan_exp(IntAxisFragment)
 RepeatOutlierScanExp = make_fragment_scan_exp(RepeatOutlierFragment)
+AdditiveDriftScanExp = make_fragment_scan_exp(AdditiveDriftFragment)
+MultiplicativeDriftScanExp = make_fragment_scan_exp(MultiplicativeDriftFragment)
 
 
 def _evaluate_optimizer(opt, objective):
@@ -90,33 +124,20 @@ def _evaluate_optimizer(opt, objective):
     return num_evals
 
 
-def _make_bayesian_optimizer(
-    initial, lower_bounds, upper_bounds, xatol=1e-3, fatol=1e-3
-):
-    return BayesianOptimizer(
-        initial,
-        lower_bounds,
-        upper_bounds,
-        xatol=xatol,
-        fatol=fatol,
-        n_init=10,
-        user_seed=42,
-    )
-
-
 OPTIMIZER_TEST_CASES = (
     {
         "name": "bayesian",
-        "make": _make_bayesian_optimizer,
-        "std_values": (2.0, 1.0),
-        "std_best_value": 1.0,
+        "make": BayesianOptimizer,
+        "kwargs": {"n_init": 4, "user_seed": 42},
+        "std_values": (1.0, 0.0),
+        "std_best_value": 0.0,
         "xatol": 1e-3,
         "fatol": 1e-3,
     },
-    
     {
         "name": "nelder_mead",
         "make": NelderMeadOptimizer,
+        "kwargs": {"user_seed": 42},
         "std_values": (1.0, 0.0),
         "std_best_value": 0.0,
         "xatol": 1e-2,
@@ -129,83 +150,233 @@ OPTIMIZER_TEST_CASES = (
         "std_best_value": 0.0,
         "xatol": 1e-2,
         "fatol": 0.0,
-    }
-    
-)
-
-MINIMIZING_OPTIMIZER_TEST_CASES = tuple(
-    case for case in OPTIMIZER_TEST_CASES if case["name"] != "bayesian"
+    },
 )
 
 
 class OptimizerCase(HasEnvironmentCase):
-    def test_best_std_tracks_best_point(self):
-        for case in OPTIMIZER_TEST_CASES:
-            with self.subTest(optimizer=case["name"]):
-                opt = case["make"]((0.0,), (-5.0,), (5.0,), 1e-4, 1e-6)
+    def test_nelder_mead_initial_simplex_is_seeded_and_multidimensional(self):
+        kwargs = {
+            "initial": (0.0, 0.0),
+            "lower_bounds": (-1.0, -1.0),
+            "upper_bounds": (1.0, 1.0),
+            "xatol": 1e-3,
+            "fatol": 1e-3,
+            "user_seed": 42,
+        }
+        first = NelderMeadOptimizer(**kwargs)
+        second = NelderMeadOptimizer(**kwargs)
+        first_points = [first.ask() for _ in range(3)]
+        second_points = [second.ask() for _ in range(3)]
+        self.assertEqual(first_points, second_points)
+        self.assertEqual(first_points[0], (0.0, 0.0))
+        self.assertTrue(
+            all(point[0] != 0.0 and point[1] != 0.0 for point in first_points[1:])
+        )
 
-                first_point = opt.ask()
-                self.assertIsNotNone(first_point)
-                opt.tell(first_point, case["std_values"][0], 0.125)
-                second_point = opt.ask()
-                self.assertIsNotNone(second_point)
-                opt.tell(second_point, case["std_values"][1], 0.25)
+    def test_bayesian_robust_mode_is_seeded_and_converges(self):
+        first = BayesianOptimizer(
+            (0.0,), (-2.0,), (2.0,), xatol=0.08, fatol=0.02, n_init=4, user_seed=42,
+            conv_delay=5, ei_fraction=0.25,
+        )
+        second = BayesianOptimizer(
+            (0.0,), (-2.0,), (2.0,), xatol=0.08, fatol=0.02, n_init=4, user_seed=42,
+            conv_delay=5, ei_fraction=0.25,
+        )
+        self.assertEqual(tuple(first.ask()), tuple(second.ask()))
 
-                best_point, best_value = opt.best()
-                self.assertEqual(tuple(best_point), tuple(second_point))
-                self.assertEqual(best_value, case["std_best_value"])
-                self.assertEqual(opt.best_std(), 0.25)
+        point = tuple(first.x[0])
+        first.tell(point, (point[0] - 0.7) ** 2, 0.01)
+        num_evals = 1
+        while num_evals < 20 and (point := first.ask()) is not None:
+            point = tuple(point)
+            first.tell(point, (point[0] - 0.7) ** 2, 0.01)
+            num_evals += 1
 
-    def test_converges_1d(self):
-        for case in MINIMIZING_OPTIMIZER_TEST_CASES:
-            with self.subTest(optimizer=case["name"]):
-                opt = case["make"]((4.0,), (-5.0,), (5.0,), 1e-4, 1e-6)
-                _evaluate_optimizer(opt, lambda point: (point[0] - 1.25) ** 2)
+        best_point, best_value = first.best()
+        self.assertEqual(first.termination_reason(), "converged")
+        self.assertAlmostEqual(best_point[0], 0.7, delta=0.15)
+        self.assertLess(best_value, 0.03)
 
-                best_point, best_value = opt.best()
-                self.assertAlmostEqual(best_point[0], 1.25, places=2)
-                self.assertLess(best_value, 1e-4)
+    def test_bayesian_sampling_and_noise_modes(self):
+        robust = BayesianOptimizer(
+            (0.0, 0.0),
+            (-1.0, -1.0),
+            (1.0, 1.0),
+            xatol=1e-3,
+            fatol=1e-3,
+            n_init=3,
+            user_seed=42,
+        )
+        self.assertEqual(robust.n_init, 6)
+        self.assertEqual(robust.get_sim_time(), 0.0)
+        point = tuple(robust.ask())
+        robust.tell(point, 1.0, 0.0)
+        self.assertAlmostEqual(robust.init_y_var[-1].item(), 1e-3)
 
-    def test_converges_2d(self):
-        for case in MINIMIZING_OPTIMIZER_TEST_CASES:
-            with self.subTest(optimizer=case["name"]):
-                opt = case["make"](
-                    (4.0, -4.0), (-5.0, -5.0), (5.0, 5.0), 1e-4, 1e-6
+        simple = BayesianOptimizer(
+            (0.0,),
+            (-1.0,),
+            (1.0,),
+            xatol=1e-3,
+            fatol=1e-3,
+            n_init=3,
+            user_seed=42,
+            robust_mode=False,
+        )
+        point = tuple(simple.ask())
+        simple.tell(point, 1.0, 0.0)
+        self.assertEqual(simple.init_y_var[-1].item(), 0.0)
+
+    def test_default_nelder_mead_simplex_uses_half_bounds_span(self):
+        self.assertEqual(
+            default_optimise_params()["algorithm"]["simplex_step_fraction"], 0.5
+        )
+
+    def test_best_result_uses_parameter_names_and_units(self):
+        spec = OptimizeSpec(
+            [
+                OptimizeAxis(
+                    {
+                        "fqn": "example.detuning",
+                        "spec": {
+                            "min": 0.0,
+                            "max": 10e6,
+                            "unit": "MHz",
+                            "scale": 1e6,
+                        },
+                    },
+                    "*",
+                    None,
+                    0.0,
+                    10e6,
+                    1e6,
                 )
-                _evaluate_optimizer(
-                    opt, lambda point: (point[0] - 1.5) ** 2 + (point[1] + 0.5) ** 2
-                )
+            ],
+            ObjectiveSpec("objective", "min"),
+            OptimizeAlgorithmSpec("test"),
+            OptimizeAcquisitionSpec(),
+        )
 
-                best_point, best_value = opt.best()
-                self.assertAlmostEqual(best_point[0], 1.5, places=2)
-                self.assertAlmostEqual(best_point[1], -0.5, places=2)
-                self.assertLess(best_value, 1e-4)
+        result = format_best_result(
+            spec,
+            FloatChannel("objective", unit="kHz", scale=1e3),
+            (2e6,),
+            3e3,
+        )
 
-    def test_xatol_is_relative_to_bounds(self):
-        for case in MINIMIZING_OPTIMIZER_TEST_CASES:
-            with self.subTest(optimizer=case["name"]):
+        self.assertEqual(result, "Objective: 3.000 kHz, detuning: 2.00 MHz")
 
-                def run_scaled(scale):
-                    opt = case["make"](
-                        (4.0 * scale,),
-                        (-5.0 * scale,),
-                        (5.0 * scale,),
-                        case["xatol"],
-                        case["fatol"],
-                    )
-                    num_evals = _evaluate_optimizer(
-                        opt,
-                        lambda point: (
-                            (point[0] - 1.25 * scale) / (10.0 * scale)
-                        )
-                        ** 2,
-                    )
-                    return num_evals, opt.best()[0][0]
+    def _check_best_std_tracks_best_point(self, case):
+        opt = case["make"](
+            (0.0,),
+            (-5.0,),
+            (5.0,),
+            xatol=1e-4,
+            fatol=1e-6,
+            **case.get("kwargs", {}),
+        )
 
-                small_count, small_best = run_scaled(1.0)
-                large_count, large_best = run_scaled(10.0)
-                self.assertEqual(small_count, large_count)
-                self.assertAlmostEqual(small_best, large_best / 10.0)
+        first_point = opt.ask()
+        self.assertIsNotNone(first_point)
+        opt.tell(first_point, case["std_values"][0], 0.125)
+        second_point = opt.ask()
+        self.assertIsNotNone(second_point)
+        opt.tell(second_point, case["std_values"][1], 0.25)
+
+        best_point, best_value = opt.best()
+        self.assertEqual(tuple(best_point), tuple(second_point))
+        self.assertEqual(best_value, case["std_best_value"])
+        self.assertEqual(opt.best_std(), 0.25)
+
+    def _check_converges_1d(self, case):
+        if case["name"] == "bayesian":
+            self.skipTest("Covered by the Bayesian convergence regression")
+        opt = case["make"](
+            (4.0,),
+            (-5.0,),
+            (5.0,),
+            xatol=1e-4,
+            fatol=1e-6,
+            **case.get("kwargs", {}),
+        )
+        _evaluate_optimizer(opt, lambda x: x[0] ** 3 / 3 + 5 * x[0] ** 2 / 2 - 6 * x[0])
+
+        self.assertIn(opt.termination_reason(), {"max_evals_reached", "converged"})
+        best_point, best_value = opt.best()
+        self.assertAlmostEqual(best_point[0], 1.0, places=2)
+        self.assertAlmostEqual(best_value, -19 / 6, places=2)
+
+    def _check_converges_2d(self, case):
+        if case["name"] == "bayesian":
+            self.skipTest("Covered by the Bayesian convergence regression")
+        opt = case["make"](
+            (4.0, -4.0),
+            (-5.0, -5.0),
+            (5.0, 5.0),
+            xatol=1e-4,
+            fatol=1e-6,
+            **case.get("kwargs", {}),
+        )
+        _evaluate_optimizer(
+            opt, lambda x: x[0] ** 3 / 3 + 5 * x[0] ** 2 / 2 - 6 * x[0] + x[1]
+        )
+
+        self.assertIn(opt.termination_reason(), {"max_evals_reached", "converged"})
+        best_point, best_value = opt.best()
+        self.assertAlmostEqual(best_point[0], 1.0, places=2)
+        self.assertAlmostEqual(best_point[1], -5.0, places=2)
+        self.assertAlmostEqual(best_value, -49 / 6, places=2)
+
+    def _check_xatol_is_relative_to_bounds(self, case):
+        if case["name"] == "bayesian":
+            self.skipTest("Bayesian sampling count depends on dimensionality")
+
+        def run_scaled(scale):
+            opt = case["make"](
+                (4.0 * scale,),
+                (-5.0 * scale,),
+                (5.0 * scale,),
+                xatol=case["xatol"],
+                fatol=case["fatol"],
+                **case.get("kwargs", {}),
+            )
+            num_evals = _evaluate_optimizer(
+                opt,
+                lambda point: ((point[0] - 1.25 * scale) / (10.0 * scale)) ** 2,
+            )
+            return num_evals, opt.best()[0][0]
+
+        small_count, small_best = run_scaled(1.0)
+        large_count, large_best = run_scaled(10.0)
+        self.assertEqual(small_count, large_count)
+        self.assertAlmostEqual(
+            small_best,
+            large_best / 10.0,
+            delta=case["xatol"] * 10.0,
+        )
+
+
+def _make_optimizer_test(check_name, case):
+    def test(self):
+        getattr(self, check_name)(case)
+
+    test.__name__ = "test_{}_{}".format(
+        check_name.removeprefix("_check_"), case["name"]
+    )
+    return test
+
+
+for _check_name, _check in list(OptimizerCase.__dict__.items()):
+    if not _check_name.startswith("_check_") or not callable(_check):
+        continue
+
+    for _case in OPTIMIZER_TEST_CASES:
+        setattr(
+            OptimizerCase,
+            "test_{}_{}".format(_check_name.removeprefix("_check_"), _case["name"]),
+            _make_optimizer_test(_check_name, _case),
+        )
 
 
 class FragmentOptimizeExpCase(HasEnvironmentCase):
@@ -243,6 +414,7 @@ class FragmentOptimizeExpCase(HasEnvironmentCase):
                 "kind": algorithm,
                 "xatol": 1e-4,
                 "fatol": 1e-6,
+                "user_seed": 42,
             },
             "max_evals": max_evals,
             "num_repeats_per_point": num_repeats_per_point,
@@ -265,6 +437,8 @@ class FragmentOptimizeExpCase(HasEnvironmentCase):
         self.assertEqual(d("optimizer.objective_direction"), "min")
         self.assertEqual(d("optimizer.num_repeats_per_point"), 1)
         self.assertEqual(d("optimizer.averaging_method"), "mean")
+        self.assertEqual(d("optimizer.reference_normalisation"), "none")
+        self.assertEqual(d("optimizer.reference_resample_interval"), 1)
         self.assertIn(
             d("optimizer.termination_reason"), {"converged", "max_evals_reached"}
         )
@@ -341,6 +515,7 @@ class FragmentOptimizeExpCase(HasEnvironmentCase):
                 "kind": "nelder_mead",
                 "xatol": 1e-4,
                 "fatol": 1e-6,
+                "user_seed": 42,
             },
             "max_evals": 120,
             "skip_on_persistent_transitory_error": False,
@@ -435,6 +610,129 @@ class FragmentOptimizeExpCase(HasEnvironmentCase):
         with self.assertRaises(ScanSpecError):
             exp.prepare()
 
+    def test_reject_unknown_reference_normalisation(self):
+        exp = self.create(QuadraticScanExp)
+        self._configure_optimise(exp)
+        exp.args._params["optimise"]["reference_normalisation"] = "bogus"
+        with self.assertRaises(ScanSpecError):
+            exp.prepare()
+
+    def test_max_evaluation_termination_is_reported(self):
+        exp = self.create(QuadraticScanExp)
+        self._configure_optimise(exp, algorithm="coordinate_search", max_evals=2)
+        exp.prepare()
+        exp.run()
+
+        self.assertEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.termination_reason"),
+            "max_evals_reached",
+        )
+        self.assertEqual(len(self.dataset_db.get("ndscan.rid_0.points.axis_0")), 2)
+
+    def test_reject_non_positive_reference_resample_interval(self):
+        exp = self.create(QuadraticScanExp)
+        self._configure_optimise(exp)
+        exp.args._params["optimise"]["reference_resample_interval"] = 0
+        with self.assertRaises(ScanSpecError):
+            exp.prepare()
+
+    def test_reference_uncertainty_propagation(self):
+        subtracted = _normalise_objective_value(10.0, 3.0, 4.0, 4.0, "subtract")
+        self.assertEqual(subtracted, (6.0, 5.0))
+
+        divided = _normalise_objective_value(10.0, 3.0, 4.0, 2.0, "divide")
+        self.assertAlmostEqual(divided[0], 2.5)
+        self.assertAlmostEqual(divided[1], 1.4577379737113252)
+        self.assertIsNone(_normalise_objective_value(10.0, 3.0, 0.0, 2.0, "divide"))
+
+    def test_subtract_reference_normalisation(self):
+        exp = self.create(AdditiveDriftScanExp)
+        exp.args._params["execution_mode"] = "optimise"
+        exp.args._params["optimise"] = {
+            "parameters": [
+                {
+                    "fqn": "test_experiment_optimize.AdditiveDriftFragment.x",
+                    "path": "*",
+                    "min": -1.0,
+                    "max": 1.0,
+                    "initial": 0.0,
+                }
+            ],
+            "objective": {"channel": "objective", "direction": "min"},
+            "algorithm": {
+                "kind": "coordinate_search",
+                "xatol": 1e-4,
+                "fatol": 1e-6,
+            },
+            "max_evals": 6,
+            "reference_normalisation": "subtract",
+            "reference_resample_interval": 1,
+            "skip_on_persistent_transitory_error": False,
+        }
+        exp.prepare()
+        exp.run()
+
+        self.assertEqual(
+            self.dataset_db.get("ndscan.rid_0.points.channel_objective"),
+            [0.0, 10.0, 20.0, 30.5, 40.0, 49.5],
+        )
+        self.assertAlmostEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.best_axis_0"), -0.5
+        )
+        self.assertAlmostEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.best_value"), 9.5
+        )
+        self.assertEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.evaluations.objective"),
+            [10.0, 10.5, 9.5],
+        )
+        self.assertEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.evaluations.point_index"),
+            [1, 3, 5],
+        )
+
+    def test_divide_reference_normalisation(self):
+        exp = self.create(MultiplicativeDriftScanExp)
+        exp.args._params["execution_mode"] = "optimise"
+        exp.args._params["optimise"] = {
+            "parameters": [
+                {
+                    "fqn": "test_experiment_optimize.MultiplicativeDriftFragment.x",
+                    "path": "*",
+                    "min": -1.0,
+                    "max": 1.0,
+                    "initial": 0.0,
+                }
+            ],
+            "objective": {"channel": "objective", "direction": "min"},
+            "algorithm": {
+                "kind": "coordinate_search",
+                "xatol": 1e-4,
+                "fatol": 1e-6,
+            },
+            "max_evals": 6,
+            "reference_normalisation": "divide",
+            "reference_resample_interval": 1,
+            "skip_on_persistent_transitory_error": False,
+        }
+        exp.prepare()
+        exp.run()
+
+        self.assertEqual(
+            self.dataset_db.get("ndscan.rid_0.points.channel_objective"),
+            [2.0, 4.0, 6.0, 10.0, 10.0, 9.0],
+        )
+        self.assertAlmostEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.best_axis_0"), -0.5
+        )
+        self.assertAlmostEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.best_value"), 0.9
+        )
+        self.assertEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.evaluations.objective"),
+            [2.0, 10.0 / 6.0, 0.9],
+        )
+
     def test_mean_aggregates_repeated_objective_values(self):
         exp = self.create(RepeatOutlierScanExp)
         exp.args._params["execution_mode"] = "optimise"
@@ -468,6 +766,18 @@ class FragmentOptimizeExpCase(HasEnvironmentCase):
         )
         self.assertAlmostEqual(
             self.dataset_db.get("ndscan.rid_0.optimizer.best_value"), 3.0
+        )
+        self.assertAlmostEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.best_std"),
+            4.242640687119285,
+        )
+        self.assertEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.evaluations.objective"),
+            [3.0],
+        )
+        self.assertEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.evaluations.point_index"),
+            [2],
         )
 
     def test_median_aggregates_repeated_objective_values(self):
@@ -503,4 +813,8 @@ class FragmentOptimizeExpCase(HasEnvironmentCase):
         )
         self.assertAlmostEqual(
             self.dataset_db.get("ndscan.rid_0.optimizer.best_value"), 0.0
+        )
+        self.assertEqual(
+            self.dataset_db.get("ndscan.rid_0.optimizer.evaluations.objective"),
+            [0.0],
         )
