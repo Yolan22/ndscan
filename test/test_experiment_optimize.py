@@ -176,10 +176,26 @@ class OptimizerCase(HasEnvironmentCase):
 
     def test_bayesian_robust_mode_is_seeded_and_converges(self):
         first = BayesianOptimizer(
-            (0.0,), (-2.0,), (2.0,), xatol=0.08, fatol=0.02, n_init=4, user_seed=42
+            (0.0,),
+            (-2.0,),
+            (2.0,),
+            xatol=0.08,
+            fatol=0.02,
+            n_init=4,
+            user_seed=42,
+            conv_delay=5,
+            ei_fraction=0.25,
         )
         second = BayesianOptimizer(
-            (0.0,), (-2.0,), (2.0,), xatol=0.08, fatol=0.02, n_init=4, user_seed=42
+            (0.0,),
+            (-2.0,),
+            (2.0,),
+            xatol=0.08,
+            fatol=0.02,
+            n_init=4,
+            user_seed=42,
+            conv_delay=5,
+            ei_fraction=0.25,
         )
         self.assertEqual(tuple(first.ask()), tuple(second.ask()))
 

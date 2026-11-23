@@ -19,7 +19,7 @@ from .base import (
 
 
 def _load_ml_dependencies() -> None:
-    """Load the Bayesian optimisation dependencies on first use."""
+    """Load the Bayesian optimisation dependencies."""
     global torch
     global qKnowledgeGradient
     global qLogExpectedImprovement, qLogNoisyExpectedImprovement
@@ -75,6 +75,8 @@ class BayesianOptimizerOptimizeAlgorithmSpec(OptimizeAlgorithmSpec):
     fatol: float = 1e-3
     n_init: int = 10
     user_seed: int = -1
+    conv_delay: int = 15
+    ei_fraction: float = 0.1
 
 
 class BayesianOptimizer(Optimizer):
@@ -98,6 +100,8 @@ class BayesianOptimizer(Optimizer):
         fatol: float,  # tolerance for change in f(x)
         n_init: int,  # no.of initial samples to generate
         user_seed: int,  # user defined seed
+        conv_delay: int = 15,  # BO iterations the model's best must stay put to converge
+        ei_fraction: float = 0.1,  # max expected improvement at convergence, x noise
         robust_mode: bool = True,
     ):
         _load_ml_dependencies()
@@ -131,6 +135,14 @@ class BayesianOptimizer(Optimizer):
 
         self._xatol = xatol
         self._fatol = fatol
+        self.conv_delay = int(conv_delay)
+        # model predictions per BO iteration: (predicted objective, location in unit cube)
+        self.x_predictions: list[tuple[float, torch.Tensor]] = []
+        self.last_convergence: dict[str, float] = {}
+        self._max_ei = float("inf")
+        # converged only if no point is expected to improve on the model's best by
+        # more than this fraction of one point's measurement noise
+        self.ei_fraction = float(ei_fraction)
 
         # simulation parameters
         self.n_init = (
@@ -138,6 +150,13 @@ class BayesianOptimizer(Optimizer):
             if self.n_params >= 3
             else self.n_params * n_init
         )
+
+        # One seed for the whole run: the Latin-hypercube start AND every later
+        # iteration (see get_next_points) derive from it, so the same seed and the
+        # same measured values reproduce the same sequence of points. With
+        # user_seed = -1 a seed is drawn, and printed so the run can be replayed.
+        self.seed = self.user_seed if self.user_seed >= 0 else randint(0, 42)
+        print(f"BayesianOptimizer seed: {self.seed}")
 
         # generate initial parameter input using LHS sampling
         self.x = self.LHS_sampler()
@@ -187,6 +206,8 @@ class BayesianOptimizer(Optimizer):
                 print("Model fitting failed. Terminating optimization.")
                 self._termination_reason = "model_fit_failure"
                 return None
+            if new_candidates is None:  # converged (see _maybe_terminate)
+                return None
 
             # convert the new candidates for experimental use
             new_candidates = new_candidates.reshape(1, self.n_params)
@@ -235,10 +256,8 @@ class BayesianOptimizer(Optimizer):
         # obtain the best point so far
         self.best_init_y = self.init_y.max().item()
 
-        if self.init_y.numel() > self.n_init:  # only check after enough data
-            # check for convergence
-            self._maybe_terminate()
-
+        # Convergence is checked on the fitted model in get_next_points()
+        # (_maybe_terminate), not on raw single measurements here.
         return None
 
     def is_done(self) -> bool:
@@ -287,42 +306,118 @@ class BayesianOptimizer(Optimizer):
     def termination_reason(self) -> str | None:
         return self._termination_reason
 
+    def _stopping_expected_improvement(self, candidates) -> float:
+        """
+        Computed the largest expected improvement over the model's
+        predicted best, used for the stopping test only.
+        - Measured against the GP's best posterior mean.
+        - Evaluated at the proposed candidate, the measured points and
+            quasi-random (Sobol) points in the search box.
+        """
+        from botorch.acquisition.analytic import ExpectedImprovement
+
+        with torch.no_grad():
+            x_pred = self.model.posterior(self.train_x).mean.max().item()
+            ei = ExpectedImprovement(self.model, best_f=x_pred)
+            sobol = torch.quasirandom.SobolEngine(self.n_params, scramble=True, seed=0)
+            pts = torch.cat([
+                candidates.reshape(-1, self.n_params).double(),
+                self.train_x.double(),
+                sobol.draw(2048, dtype=torch.double),
+            ])
+            return float(ei(pts.unsqueeze(1)).max().item())
+
+    # Previous convergence check, kept for reference. It
+    # Replaced by the model-based _maybe_terminate() below.
+    #
+    # def _maybe_terminate(self) -> None:
+    #     """
+    #    Compares the last few raw measurements with the single best.
+    #    Uses 2 x best_std as fatol.
+    #    Terminates the optimization if we converge.
+    #
+    #     """
+    #
+    #     if self.iter_idx == 0:
+    #         return  # don't check for termination during initial sampling
+    #
+    #     # find where the best values occurred
+    #     best_x, best_y = self.best()  # in physical units
+    #
+    #     # denormalize init_x and flatten init_y
+    #     all_x_phys = np.array([
+    #         self.denormalize(self.init_x[i]) for i in range(len(self.init_x))
+    #     ])
+    #     all_y = -self.init_y.numpy().flatten()  # negate back to original values
+    #
+    #     # get recent 5 points and values for convergence check
+    #     recent_x = all_x_phys[-5:]
+    #     recent_y = all_y[-5:]
+    #
+    #     # find max change in x
+    #     max_x_delta = max(
+    #         np.max(np.abs((point - best_x) / self._span)) for point in recent_x
+    #     )
+    #
+    #     # find max change in y
+    #     max_f_delta = max(abs(value - best_y) for value in recent_y)
+    #
+    #     # get best standard deviation
+    #     best_y_std = self.best_std()
+    #     self.dynamic_fatol = 2 * best_y_std
+    #     fatol = self.dynamic_fatol if self.noise_robust_mode else self._fatol
+    #
+    #     # check if both changes are within the specified tolerances
+    #     if max_x_delta <= self._xatol and max_f_delta <= fatol:
+    #         self._termination_reason = "converged"
+
     def _maybe_terminate(self) -> None:
         """
-        Terminates the optimization if we converge.
+        Noise-aware convergence test, run once per BO iteration on the fitted GP.
+        Sets self._termination_reason = "converged".
+
+        The "x_prediction" is the measured point with the best predicted objective.
+        Converged when, over the last `conv_delay` iterations,
+          1. the x_prediction's predicted objective varied by no more than the typical
+            measurement noise of one point (or fatol, if that is larger), and
+          2. the x_prediction's location moved by at most xatol (as a fraction of each
+            parameter's range)
+          3. no point is expected to improve on it by more than ei_fraction of that noise.
+
+        .
         """
+        with torch.no_grad():
+            # obtain the GP posterior mean = best predicted objective value
+            mean = self.model.posterior(self.train_x).mean.squeeze(-1)
+        best = int(torch.argmax(mean).item())  # model space maximises -objective
+        self.x_predictions.append((
+            -mean[best].item(),
+            self.train_x[best].detach().clone(),
+        ))
 
-        if self.iter_idx == 0:
-            return  # don't check for termination during initial sampling
-
-        # find where the best values occurred
-        best_x, best_y = self.best()  # in physical units
-
-        # denormalize init_x and flatten init_y
-        all_x_phys = np.array([
-            self.denormalize(self.init_x[i]) for i in range(len(self.init_x))
-        ])
-        all_y = -self.init_y.numpy().flatten()  # negate back to original values
-
-        # get recent 5 points and values for convergence check
-        recent_x = all_x_phys[-5:]
-        recent_y = all_y[-5:]
-
-        # find max change in x
-        max_x_delta = max(
-            np.max(np.abs((point - best_x) / self._span)) for point in recent_x
-        )
-
-        # find max change in y
-        max_f_delta = max(abs(value - best_y) for value in recent_y)
-
-        # get best standard deviation
-        best_y_std = self.best_std()
-        self.dynamic_fatol = 2 * best_y_std
-        fatol = self.dynamic_fatol if self.noise_robust_mode else self._fatol
-
-        # check if both changes are within the specified tolerances
-        if max_x_delta <= self._xatol and max_f_delta <= fatol:
+        # check after max(conv_delay, 2 * n_params) BO iterations
+        if len(self.x_predictions) <= max(self.conv_delay, 2 * self.n_params):
+            return
+        window = self.x_predictions[-(self.conv_delay + 1) :]
+        values = [v for v, _ in window]
+        latest_x = window[-1][1]
+        noise = float(torch.sqrt(self.train_y_var.clamp_min(0.0)).median().item())
+        self.last_convergence = {
+            "spread": max(values) - min(values),
+            "ftol": max(self._fatol, noise),
+            "moved": max(
+                float(torch.max(torch.abs(x - latest_x)).item()) for _, x in window
+            ),
+            "max_ei": self._max_ei,
+            "ei_tol": self.ei_fraction * max(self._fatol, noise),
+        }
+        c = self.last_convergence
+        # check if all changes are within the specified tolerances
+        if (
+            c["spread"] <= c["ftol"]
+            and c["moved"] <= self._xatol
+            and c["max_ei"] <= c["ei_tol"]
+        ):
             self._termination_reason = "converged"
 
     def get_kernel(self):
@@ -459,6 +554,19 @@ class BayesianOptimizer(Optimizer):
 
     def get_next_points(self):
         """
+        Seeded wrapper around _get_next_points(): every random draw made while
+        fitting the model, building the acquisition function and optimising it
+        (MC samples, baseline pruning, restart points) comes from a PyTorch random
+        state seeded from the run's seed and the number of points measured so far.
+        fork_rng() restores the global random state afterwards, so nothing outside
+        the optimizer is affected.
+        """
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(self.seed * 1_000_003 + int(self.init_y.numel()))
+            return self._get_next_points()
+
+    def _get_next_points(self):
+        """
         Obtains the next point(s) to sample in the BO loop.
         It does the following:
             - Builds and trains the surrogate model (GP)
@@ -509,6 +617,13 @@ class BayesianOptimizer(Optimizer):
             raw_samples=raw_samples,
             options={"batch_limit": 5, "maxiter": 200},
         )
+        # how much any point is still expected to improve on the model's best
+        self._max_ei = self._stopping_expected_improvement(candidates)
+
+        # noise-aware convergence check on the freshly fitted model
+        self._maybe_terminate()
+        if self._termination_reason is not None:
+            return True, None
 
         return True, candidates
 
@@ -554,10 +669,9 @@ class BayesianOptimizer(Optimizer):
         """
 
         #  generate LHS samples
-        seed = self.user_seed if self.user_seed >= 0 else randint(0, 42)
         sampler = LatinHypercube(
-            d=self.n_params, seed=seed
-        )  # LHS sampler with fixed/None seed
+            d=self.n_params, seed=self.seed
+        )  # LHS sampler seeded from the run's seed
 
         unit_samples = sampler.random(
             n=self.n_init
@@ -689,6 +803,28 @@ register_algorithm(
             default=-1,
             step=1,
             tooltip="User defined seed for initial sampling. If -1, do random selection.",
+        ),
+        AlgorithmParameter(
+            name="conv_delay",
+            label="conv_delay",
+            minimum=3,
+            maximum=500,
+            default=15,
+            step=1,
+            tooltip="Converged when, for this many iterations, the model's predicted best has "
+            "1) changed by less than the measurement noise (or fatol), 2) moved less than xatol, and "
+            "3) no point is expected to improve on it by more than ei_fraction of that noise.",
+        ),
+        AlgorithmParameter(
+            name="ei_fraction",
+            label="ei_fraction",
+            minimum=0.0,
+            maximum=1.0,
+            default=0.1,
+            step=0.01,
+            tooltip="Converged only if no point is expected to improve on the model's best by "
+            "more than this fraction of one point's measurement noise. Smaller = explores "
+            "longer before stopping.",
         ),
     ],
     spec_cls=BayesianOptimizerOptimizeAlgorithmSpec,
