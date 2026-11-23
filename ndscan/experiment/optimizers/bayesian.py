@@ -100,8 +100,8 @@ class BayesianOptimizer(Optimizer):
         fatol: float,  # tolerance for change in f(x)
         n_init: int,  # no.of initial samples to generate
         user_seed: int,  # user defined seed
-        conv_delay: int,  # BO iterations the model's best must stay put to converge
-        ei_fraction: float,  # max expected improvement at convergence, x noise
+        conv_delay: int = 15,  # BO iterations the model's best must stay put to converge
+        ei_fraction: float = 0.1,  # max expected improvement at convergence, x noise
         robust_mode: bool = True,
     ):
         _load_ml_dependencies()
