@@ -165,11 +165,11 @@
     "src-oitg": {
       "flake": false,
       "locked": {
-        "lastModified": 1768571395,
-        "narHash": "sha256-jZhBSJufZ2hwGGc4tx14FV6sX6bYil48LL3f+DB9x98=",
+        "lastModified": 1792785287,
+        "narHash": "sha256-eWlGfxQIiWwiW1P5RrIPDF4qgjB9PLEsghn3N00LaH8=",
         "owner": "OxfordIonTrapGroup",
         "repo": "oitg",
-        "rev": "a2467207768ec7bed1a71c3a8fbba91eee407332",
+        "rev": "e8188b943be64ebc6864d16444407f4ed33dfa3c",
         "type": "github"
       },
       "original": {

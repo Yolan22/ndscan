@@ -43,7 +43,8 @@ dev = [
 
 [tool.uv.sources]
 artiq = { git = "https://github.com/m-labs/artiq.git", branch = "release-8" }
-oitg = { git = "https://github.com/oxfordiontrapgroup/oitg.git" }
+# Match the OITG revision in the laboratory ARTIQ environment and emulator.
+oitg = { git = "https://github.com/oxfordiontrapgroup/oitg.git", rev = "e8188b943be64ebc6864d16444407f4ed33dfa3c" }
 
 #.Pin SiPyCo to v1.9 for now to avoid PYON v2 fiasco (silent, breaking format change).
 sipyco = { git = "https://github.com/m-labs/sipyco.git", tag = "v1.9" }

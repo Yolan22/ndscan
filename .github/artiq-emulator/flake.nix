@@ -18,15 +18,13 @@
         name = "oitg";
         src = src-oitg;
         format = "pyproject";
+        nativeBuildInputs = [ nixpkgs.python3Packages.hatchling ];
         propagatedBuildInputs = with nixpkgs.python3Packages; [
           h5py
-          botorch
-          gpytorch
+          influxdb
+          numpy
           scipy
           statsmodels
-          torch
-          nixpkgs.python3Packages.poetry-core
-          nixpkgs.python3Packages.poetry-dynamic-versioning
         ];
         # Whatever magic `setup.py test` does by default fails for oitg.
         installCheckPhase = ''
@@ -36,7 +34,8 @@
     in {
       devShells.x86_64-linux.default = nixpkgs.mkShell {
         name = "ndscan-dev-shell";
-        buildInputs = [ artiqpkg libartiq-emulator oitg ];
+        buildInputs = [ artiqpkg libartiq-emulator oitg ] ++
+          (with nixpkgs.python3Packages; [ botorch gpytorch torch ]);
         shellHook = ''
           export LIBARTIQ_EMULATOR=${libartiq-emulator}/lib/libartiq_emulator.so
         '';
