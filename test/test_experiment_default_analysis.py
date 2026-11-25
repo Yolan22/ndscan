@@ -111,7 +111,7 @@ class OnlineFitDataSource(ExpFragment):
 
     def run_once(self) -> None:
         model = FIT_OBJECTS[self.fit_name].fitting_function(
-            self.x.get(), self.parameters | self.constants | self.initial_values
+            self.x.get(), self.parameters | self.constants
         )
         if self.gaussian_noise > 0:
             model += self.rng.standard_normal() * self.gaussian_noise
@@ -199,7 +199,10 @@ class OnlineFitAnalysisTestCase(HasEnvironmentCase):
         for param_name, true_value in true_params.items():
             fit_value = results[fit_channel(param_name)]
             fit_err = results[fit_channel(param_name + "_err")]
-            self.assertAlmostEqual(fit_value, true_value, delta=5 * fit_err)
+            if gaussian_noise > 0.0:
+                self.assertAlmostEqual(fit_value, true_value, delta=5 * fit_err)
+            else:
+                np.testing.assert_allclose(fit_value, true_value, rtol=1e-8, atol=1e-10)
 
         reduced_chi_squared = results[fit_channel("reduced_chi_squared")]
         if gaussian_noise > 0.0:
@@ -234,11 +237,11 @@ class OnlineFitAnalysisTestCase(HasEnvironmentCase):
             "phi": -0.05,
         }
         init_values = {
-            "omega": 1e-3,
-            "t_dead": 1e-3,
-            "a": 1e-3,
-            "c": 1e-3,
-            "phi": 1e-3,
+            "omega": 9.9,
+            "t_dead": 0.02,
+            "a": 0.75,
+            "c": 0.06,
+            "phi": -0.04,
         }
         results = self._test_execute(
             "sinusoid",
@@ -267,11 +270,11 @@ class OnlineFitAnalysisTestCase(HasEnvironmentCase):
             "phi": -0.05,
         }
         init_values = {
-            "omega": 1e-3,
-            "t_dead": 1e-3,
-            "a": 1e-3,
-            "c": 1e-3,
-            "phi": 1e-3,
+            "omega": 9.9,
+            "t_dead": 0.02,
+            "a": 0.75,
+            "c": 0.06,
+            "phi": -0.04,
         }
         self.assertRaises(
             AssertionError,
