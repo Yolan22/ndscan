@@ -30,7 +30,7 @@ from .model.history import HistoryFromScanModel
 from .model.select_point import SelectPointFromScanModel
 from .model.slice import create_slice_roots
 from .model.subscan import create_subscan_roots
-from .plot_widgets import SliceableMenuPanesWidget, add_source_id_label, add_time_slider
+from .plot_widgets import SliceableMenuPanesWidget, add_source_id_label
 from .utils import (
     CONTRASTING_COLOR_TO_HIGHLIGHT,
     HIGHLIGHT_PEN,
@@ -1176,7 +1176,7 @@ class OptimisePlotWidget(SliceableMenuPanesWidget):
         )
 
     def add_time_slider(self):
-        self.time_slider = add_time_slider(self.layout, self.scene(), self.model)
+        self.time_slider = super().add_time_slider(self.model)
         self.time_slider.cutoff_changed.connect(self.time_cutoff_changed)
 
     def time_cutoff_changed(self, cutoff: int):
