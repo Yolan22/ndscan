@@ -8,7 +8,7 @@ import logging
 import math
 from collections import OrderedDict
 from enum import Enum, unique
-from typing import Any, Optional
+from typing import Any
 
 from artiq.gui.scientific_spinbox import ScientificSpinBox
 from artiq.gui.tools import disable_scroll_wheel
@@ -206,7 +206,7 @@ class NumericScanOption(ScanOption):
             return fallback
         return value
 
-    def _default_numeric_param_value(self) -> Optional[float]:
+    def _default_numeric_param_value(self) -> float | None:
         try:
             return float(
                 eval_param_default(
@@ -214,7 +214,7 @@ class NumericScanOption(ScanOption):
                     _raise_missing_default_dataset,
                 )
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - Defaults may need unavailable datasets.
             return None
 
     def _default_numeric_centre_value(self, fallback: float = 0.0) -> float:
@@ -268,7 +268,7 @@ class NumericScanOption(ScanOption):
             return half_span
         return self._default_numeric_step_value()
 
-    def _current_numeric_sync_value(self, sync_values: dict) -> Optional[float]:
+    def _current_numeric_sync_value(self, sync_values: dict) -> float | None:
         if SyncValue.initial in sync_values:
             return sync_values[SyncValue.initial]
         if SyncValue.centre in sync_values:

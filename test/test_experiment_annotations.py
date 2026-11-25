@@ -2,7 +2,6 @@ import json
 import unittest
 
 import numpy as np
-
 from fixtures import AddOneTextAnnotationsFragment
 from mock_environment import HasEnvironmentCase
 

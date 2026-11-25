@@ -56,3 +56,9 @@ extend-select = [
 
 # En dashes, etc. are used deliberately in comments and UI strings.
 allowed-confusables = ["–", "×", "σ", "\u2009"]
+
+[lint.per-file-ignores]
+# The Bayesian backend deliberately loads the ML stack on first use.
+"ndscan/experiment/optimizers/bayesian.py" = ["PLW0603"]
+# Retain the existing module import path for compatibility.
+"ndscan/plots/optimise_Nd.py" = ["N999"]

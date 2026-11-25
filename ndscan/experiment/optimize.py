@@ -169,7 +169,8 @@ def select_objective_channel(
     if not channel.save_by_default:
         raise ValueError("Optimisation objective channel must be saved by default")
     if not isinstance(channel, NumericChannel):
-        raise ValueError(
+        # Invalid user-selected objective, rather than an invalid call signature.
+        raise ValueError(  # noqa: TRY004
             "Optimisation objective channel must be numeric (float or int)"
         )
     if spec.objective.direction not in {"min", "max"}:
@@ -209,7 +210,7 @@ def format_best_result(
     entries = [
         f"Objective: {_format_numeric_value(value, objective_channel.describe())}"
     ]
-    for axis, axis_value in zip(spec.axes, point):
+    for axis, axis_value in zip(spec.axes, point, strict=True):
         name = axis.param_schema["fqn"].split(".")[-1]
         entries.append(
             f"{name}: {_format_numeric_value(axis_value, axis.param_schema['spec'])}"
@@ -490,7 +491,7 @@ class OptimizeResultPublisher:
         aggregated candidate evaluation back to the last raw acquisition contributing
         to it, allowing history views to hide future evaluations correctly.
         """
-        for sink, axis_value in zip(self._evaluation_axis_sinks, point):
+        for sink, axis_value in zip(self._evaluation_axis_sinks, point, strict=True):
             sink.push(axis_value)
         self._evaluation_objective_sink.push(value)
         self._evaluation_std_sink.push(std_dev)

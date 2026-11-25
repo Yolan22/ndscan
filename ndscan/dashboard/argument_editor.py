@@ -942,7 +942,7 @@ class OverrideEntry(LayoutWidget):
             ExecutionMode.optimise.name: 0,
         }
         self.options = []
-        for name, option_cls in option_classes.items():
+        for option_cls in option_classes.values():
             option = option_cls(self.schema, self.path)
             option.value_changed.connect(self.value_changed)
             container = QtWidgets.QWidget()

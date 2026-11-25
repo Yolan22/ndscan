@@ -94,7 +94,8 @@ def build_algorithm_spec(algorithm: dict[str, Any]) -> OptimizeAlgorithmSpec:
         param = params_by_name.get(field.name)
         if param is None:
             raise ValueError(
-                f"Algorithm spec '{spec_cls.__name__}' has no registry entry for field '{field.name}'"
+                f"Algorithm spec '{spec_cls.__name__}' has no registry entry "
+                f"for field '{field.name}'"
             )
 
         raw_value = algorithm.get(field.name, param.default)
@@ -105,7 +106,8 @@ def build_algorithm_spec(algorithm: dict[str, Any]) -> OptimizeAlgorithmSpec:
 
         if value < param.minimum or value > param.maximum:
             raise ValueError(
-                f"Optimisation {field.name} must be between {param.minimum} and {param.maximum}"
+                f"Optimisation {field.name} must be between "
+                f"{param.minimum} and {param.maximum}"
             )
         kwargs[field.name] = value
 
@@ -135,7 +137,7 @@ class Optimizer(ABC):
 
     @abstractmethod
     def best(self) -> tuple[tuple[float, ...], float] | None:
-        """Return the best point/value pair seen so far, if any evaluations completed."""
+        """Return the best point/value pair, if any evaluations completed."""
 
     @abstractmethod
     def best_std(self) -> float | None:

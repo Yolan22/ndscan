@@ -384,6 +384,7 @@ class _ImagePlot:
             x_data[num_skip:num_to_show],
             y_data[num_skip:num_to_show],
             z_data[num_skip:num_to_show],
+            strict=True,
         ):
             avg, num = self.averages_by_coords.get((x, y), (0.0, 0))
             num += 1
@@ -429,7 +430,7 @@ class _ImagePlot:
 
         x_inds = _coords_to_indices(x_data[num_skip:num_to_show], self.x_range)
         y_inds = _coords_to_indices(y_data[num_skip:num_to_show], self.y_range)
-        for i, (x_idx, y_idx) in enumerate(zip(x_inds, y_inds)):
+        for i, (x_idx, y_idx) in enumerate(zip(x_inds, y_inds, strict=True)):
             data_idx = num_skip + i
             coords, z = (x_data[data_idx], y_data[data_idx]), z_data[data_idx]
             self.sample_data[x_idx, y_idx] = (
@@ -551,7 +552,8 @@ class OptimisePlotWidget(SliceableMenuPanesWidget):
         )
         if self.objective_channel_name not in self.data_names:
             logger.warning(
-                "Configured optimisation objective channel %r is unavailable in plot data",
+                "Configured optimisation objective channel %r is unavailable "
+                "in plot data",
                 None
                 if self.model.optimisation_objective is None
                 else self.model.optimisation_objective.get("channel"),
@@ -688,7 +690,9 @@ class OptimisePlotWidget(SliceableMenuPanesWidget):
             if not self.found_duplicate_coords:
                 num_skip = len(self.unique_coords)
                 for x in zip(
-                    plot_points["axis_0"][num_skip:], plot_points["axis_1"][num_skip:]
+                    plot_points["axis_0"][num_skip:],
+                    plot_points["axis_1"][num_skip:],
+                    strict=False,
                 ):
                     if x in self.unique_coords:
                         self.found_duplicate_coords = True
@@ -740,9 +744,9 @@ class OptimisePlotWidget(SliceableMenuPanesWidget):
 
         columns = []
         for schema, values in axis_values:
-            values = np.asarray(values[:num_points], dtype=float)
-            span = _axis_span(schema, values)
-            columns.append(values / span)
+            numeric_values = np.asarray(values[:num_points], dtype=float)
+            span = _axis_span(schema, numeric_values)
+            columns.append(numeric_values / span)
         data = np.column_stack(columns)
         finite_rows = np.all(np.isfinite(data), axis=1)
         if not np.any(finite_rows):
@@ -933,12 +937,9 @@ class OptimisePlotWidget(SliceableMenuPanesWidget):
         text_color = self._html_color(pyqtgraph.getConfigOption("foreground"))
         for color, text in entries:
             parts.append(
-                "<span style='color: {color}'>&#9473;&#9473;&#9473;</span>"
-                "&nbsp;<span style='color: {text_color}'>{text}</span>".format(
-                    color=self._html_color(color),
-                    text_color=text_color,
-                    text=html.escape(text),
-                )
+                f"<span style='color: {self._html_color(color)}'>"
+                "&#9473;&#9473;&#9473;</span>"
+                f"&nbsp;<span style='color: {text_color}'>{html.escape(text)}</span>"
             )
         self.convergence_plot_item.setTitle("  ".join(parts), size="10pt")
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import traceback
 from dataclasses import dataclass
 from random import randint
-from typing import Optional
 
 # standard libraries
 import numpy as np
@@ -100,7 +99,7 @@ class BayesianOptimizer(Optimizer):
         fatol: float,  # tolerance for change in f(x)
         n_init: int,  # no.of initial samples to generate
         user_seed: int,  # user defined seed
-        conv_delay: int = 15,  # BO iterations the model's best must stay put to converge
+        conv_delay: int = 15,  # BO iterations the model's best must stay put
         ei_fraction: float = 0.1,  # max expected improvement at convergence, x noise
         robust_mode: bool = True,
     ):
@@ -136,7 +135,8 @@ class BayesianOptimizer(Optimizer):
         self._xatol = xatol
         self._fatol = fatol
         self.conv_delay = int(conv_delay)
-        # model predictions per BO iteration: (predicted objective, location in unit cube)
+        # model predictions per BO iteration: (predicted objective, location in
+        # unit cube)
         self.x_predictions: list[tuple[float, torch.Tensor]] = []
         self.last_convergence: dict[str, float] = {}
         self._max_ei = float("inf")
@@ -238,27 +238,31 @@ class BayesianOptimizer(Optimizer):
 
         del point
         if self._termination_reason is not None:
-            return None
+            return
 
         # convert to torch tensors and append the data set with the new point(s)
-        self.init_y = torch.cat((
-            self.init_y,
-            torch.tensor(-value, dtype=torch.double).reshape(1, 1),
-        ))  # update y-values
+        self.init_y = torch.cat(
+            (
+                self.init_y,
+                torch.tensor(-value, dtype=torch.double).reshape(1, 1),
+            )
+        )  # update y-values
 
         # add small noise floor for numerical stability in GP fitting
         noise_floor = 1e-3 if self.noise_robust_mode else 0.0
         obs_var = max(std_dev**2, noise_floor)
-        self.init_y_var = torch.cat((
-            self.init_y_var,
-            torch.tensor(obs_var, dtype=torch.double).reshape(1, 1),
-        ))  # update y-variances
+        self.init_y_var = torch.cat(
+            (
+                self.init_y_var,
+                torch.tensor(obs_var, dtype=torch.double).reshape(1, 1),
+            )
+        )  # update y-variances
         # obtain the best point so far
         self.best_init_y = self.init_y.max().item()
 
         # Convergence is checked on the fitted model in get_next_points()
         # (_maybe_terminate), not on raw single measurements here.
-        return None
+        return
 
     def is_done(self) -> bool:
         """
@@ -320,11 +324,13 @@ class BayesianOptimizer(Optimizer):
             x_pred = self.model.posterior(self.train_x).mean.max().item()
             ei = ExpectedImprovement(self.model, best_f=x_pred)
             sobol = torch.quasirandom.SobolEngine(self.n_params, scramble=True, seed=0)
-            pts = torch.cat([
-                candidates.reshape(-1, self.n_params).double(),
-                self.train_x.double(),
-                sobol.draw(2048, dtype=torch.double),
-            ])
+            pts = torch.cat(
+                [
+                    candidates.reshape(-1, self.n_params).double(),
+                    self.train_x.double(),
+                    sobol.draw(2048, dtype=torch.double),
+                ]
+            )
             return float(ei(pts.unsqueeze(1)).max().item())
 
     # Previous convergence check, kept for reference. It
@@ -382,7 +388,8 @@ class BayesianOptimizer(Optimizer):
             measurement noise of one point (or fatol, if that is larger), and
           2. the x_prediction's location moved by at most xatol (as a fraction of each
             parameter's range)
-          3. no point is expected to improve on it by more than ei_fraction of that noise.
+          3. no point is expected to improve on it by more than ei_fraction of that
+            noise.
 
         .
         """
@@ -390,10 +397,12 @@ class BayesianOptimizer(Optimizer):
             # obtain the GP posterior mean = best predicted objective value
             mean = self.model.posterior(self.train_x).mean.squeeze(-1)
         best = int(torch.argmax(mean).item())  # model space maximises -objective
-        self.x_predictions.append((
-            -mean[best].item(),
-            self.train_x[best].detach().clone(),
-        ))
+        self.x_predictions.append(
+            (
+                -mean[best].item(),
+                self.train_x[best].detach().clone(),
+            )
+        )
 
         # check after max(conv_delay, 2 * n_params) BO iterations
         if len(self.x_predictions) <= max(self.conv_delay, 2 * self.n_params):
@@ -478,7 +487,7 @@ class BayesianOptimizer(Optimizer):
         # define the marginal log likelihood
         self.mll = ExactMarginalLogLikelihood(self.model.likelihood, self.model)
 
-    def obj_callable(self, Z: torch.Tensor, X: Optional[torch.Tensor] = None):
+    def obj_callable(self, Z: torch.Tensor, X: torch.Tensor | None = None):
         return Z[..., 0]
 
     def constraint_callable(self, Z: torch.Tensor):
@@ -588,7 +597,7 @@ class BayesianOptimizer(Optimizer):
             try:
                 fit_gpytorch_mll_torch(self.mll, step_limit=300)
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Preserve fitting fallback.
                 print(f"Adam optimizer also failed. {e}")
                 return False, None
 
@@ -597,7 +606,7 @@ class BayesianOptimizer(Optimizer):
             print(f"ValueError during fitting: {ve}")
             return False, None
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Preserve fitting fallback.
             # catch any other unexpected errors
             print(f"Unexpected error during model fitting: {e}")
             traceback.print_exc()
@@ -653,10 +662,12 @@ class BayesianOptimizer(Optimizer):
             - unit_bounds : ((2, d') tensor) unit bounds
         """
         # create bounds
-        unit_bounds = torch.stack([
-            torch.zeros(self.n_params, dtype=torch.double),
-            torch.ones(self.n_params, dtype=torch.double),
-        ])
+        unit_bounds = torch.stack(
+            [
+                torch.zeros(self.n_params, dtype=torch.double),
+                torch.ones(self.n_params, dtype=torch.double),
+            ]
+        )
         return unit_bounds
 
     def LHS_sampler(self):
@@ -760,7 +771,7 @@ class BayesianOptimizer(Optimizer):
         return unique_x, unique_y, unique_y_var
 
     def get_sim_time(self) -> float:
-        """Return accumulated optimiser runtime (reserved for timing instrumentation)."""
+        """Return accumulated optimiser runtime (reserved for timing)."""
         return self.time_accumulated
 
 
@@ -775,7 +786,8 @@ register_algorithm(
             minimum=0.0,
             maximum=10**9,
             default=1e-3,
-            tooltip="Terminate when the objective value changes by at most this amount.",
+            tooltip="Terminate when the objective value changes "
+            "by at most this amount.",
         ),
         AlgorithmParameter(
             name="xatol",
@@ -784,7 +796,8 @@ register_algorithm(
             maximum=1.0,
             default=1e-3,
             step=1e-4,
-            tooltip="Terminate when each axis moves by at most this fraction of its configured bounds span.",
+            tooltip="Terminate when each axis moves by at most this fraction "
+            "of its configured bounds span.",
         ),
         AlgorithmParameter(
             name="n_init",
@@ -802,7 +815,8 @@ register_algorithm(
             maximum=42,
             default=-1,
             step=1,
-            tooltip="User defined seed for initial sampling. If -1, do random selection.",
+            tooltip="User defined seed for initial sampling. "
+            "If -1, do random selection.",
         ),
         AlgorithmParameter(
             name="conv_delay",
@@ -811,9 +825,10 @@ register_algorithm(
             maximum=500,
             default=15,
             step=1,
-            tooltip="Converged when, for this many iterations, the model's predicted best has "
-            "1) changed by less than the measurement noise (or fatol), 2) moved less than xatol, and "
-            "3) no point is expected to improve on it by more than ei_fraction of that noise.",
+            tooltip="Converged when, for this many iterations, the model's predicted "
+            "best has 1) changed by less than the measurement noise (or fatol), "
+            "2) moved less than xatol, and 3) no point is expected to improve on "
+            "it by more than ei_fraction of that noise.",
         ),
         AlgorithmParameter(
             name="ei_fraction",
@@ -822,9 +837,9 @@ register_algorithm(
             maximum=1.0,
             default=0.1,
             step=0.01,
-            tooltip="Converged only if no point is expected to improve on the model's best by "
-            "more than this fraction of one point's measurement noise. Smaller = explores "
-            "longer before stopping.",
+            tooltip="Converged only if no point is expected to improve on the "
+            "model's best by more than this fraction of one point's measurement "
+            "noise. Smaller = explores longer before stopping.",
         ),
     ],
     spec_cls=BayesianOptimizerOptimizeAlgorithmSpec,
