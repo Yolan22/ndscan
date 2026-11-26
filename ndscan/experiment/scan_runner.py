@@ -7,7 +7,7 @@ will likely be used by end users via
 """
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any
@@ -318,10 +318,29 @@ class KernelScanRunner(ScanRunner):
 
     def set_points(self, points: Iterator[tuple]) -> None:
         self._points = points
+        self._point_provider = None
         # Stash away points in current kernel chunk until they have been marked
         # complete so we can resume from interruptions.
         self._current_chunk = []
         self._update_host_param_stores()
+
+    def set_point_provider(self, provider: Callable[[int], list[tuple]]) -> bool:
+        """Supply batches whose values may depend on the preceding results.
+
+        The provider receives a maximum batch size and may return fewer points.
+        It is called only when the preceding batch has been fully consumed,
+        including skipped points. An empty batch signals completion. The first
+        batch is fetched here to initialise host-side parameter stores before
+        compilation; subsequent batches are fetched by synchronous kernel RPCs.
+        Unconsumed points are retained across kernel interruptions.
+
+        Returns whether the provider supplied any points.
+        """
+        self._point_provider = provider
+        self._point_provider_exhausted = False
+        self._current_chunk = []
+        self._get_param_values_chunk()
+        return bool(self._current_chunk)
 
     _RUN_CHUNK_PROCEED = 0
     _RUN_CHUNK_INTERRUPTED = 1
@@ -442,9 +461,18 @@ class KernelScanRunner(ScanRunner):
         # memory management issues on the kernel.
         CHUNK_SIZE = 10
 
-        self._current_chunk.extend(
-            islice(self._points, CHUNK_SIZE - len(self._current_chunk))
-        )
+        if self._point_provider is None:
+            self._current_chunk.extend(
+                islice(self._points, CHUNK_SIZE - len(self._current_chunk))
+            )
+        else:
+            if not self._current_chunk and not self._point_provider_exhausted:
+                points = self._point_provider(CHUNK_SIZE)
+                if len(points) > CHUNK_SIZE:
+                    raise ValueError("Point provider exceeded requested batch size")
+                self._current_chunk.extend(points)
+                self._point_provider_exhausted = not points
+            self._update_host_param_stores()
 
         values = tuple([] for _ in self._axes)
         for p in self._current_chunk:
@@ -507,8 +535,10 @@ class KernelScanRunner(ScanRunner):
     def _is_out_of_points(self):
         if self._current_chunk:
             return False
-        # Current chunk is empty, but we might be at a chunk boundary.
-        self._get_param_values_chunk()
+        # A feedback-dependent provider must not be advanced from asynchronous
+        # point-completion RPCs. The next blocking chunk request refills it.
+        if self._point_provider is None:
+            self._get_param_values_chunk()
         return not self._current_chunk
 
 
