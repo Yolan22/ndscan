@@ -175,13 +175,14 @@ class BayesianOptimizer(Optimizer):
         self.reference_shot_std = 0.0391
         self.num_repeats_per_point = 3
 
-        # Standard error of the mean of 3 independent shots
+        # Candidate mean minus independent reference mean
         self.calibrated_objective_std = (
-            self.reference_shot_std / np.sqrt(self.num_repeats_per_point)
+            self.reference_shot_std
+            * np.sqrt(2 / self.num_repeats_per_point)
         )
 
-        # Variance supplied to the GP
-        self.calibrated_objective_var = self.calibrated_objective_std**2
+        self.calibrated_objective_var = (
+            self.calibrated_objective_std ** 2)
 
 
     def ask(self) -> tuple[float, ...]:
@@ -484,10 +485,6 @@ class BayesianOptimizer(Optimizer):
         }
         if self.noise_robust_mode:
             model_kwargs["train_Yvar"] = self.train_y_var
-            model_kwargs["likelihood"] = FixedNoiseGaussianLikelihood(
-                noise=self.train_y_var.squeeze(),
-                learn_additional_noise=False,
-            )
         self.model = SingleTaskGP(**model_kwargs)
 
         # define the marginal log likelihood
