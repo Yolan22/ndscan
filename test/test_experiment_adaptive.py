@@ -4,6 +4,7 @@ import time
 from unittest.mock import patch
 
 from artiq.language import delay, kernel, now_mu, rpc
+from artiq.language.core import TerminationRequested
 from artiq.language.types import TFloat, TInt32, TTuple
 from emulator_environment import KernelEmulatorCase
 from mock_environment import MockScheduler
@@ -14,6 +15,7 @@ from ndscan.experiment.fragment import (
     RestartKernelTransitoryError,
     TransitoryError,
 )
+from ndscan.experiment.optimizers.coordinate_search import CoordinateSearchOptimizer
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.result_channels import FloatChannel
 
@@ -32,6 +34,10 @@ class FeedbackFragment(ExpFragment):
         self.pause_after_attempt = None
         self.host_setup_count = 0
         self.host_cleanup_count = 0
+        self.device_cleanup_count = 0
+
+    def device_cleanup(self):
+        self.device_cleanup_count += 1
 
     def host_setup(self):
         self.host_setup_count += 1
@@ -78,6 +84,7 @@ class PausingScheduler(MockScheduler):
         super().__init__()
         self.pause_requested = False
         self.pauses = 0
+        self.terminate_on_pause = False
 
     def check_pause(self) -> bool:
         return self.pause_requested or super().check_pause()
@@ -85,6 +92,8 @@ class PausingScheduler(MockScheduler):
     def pause(self):
         self.pauses += 1
         self.pause_requested = False
+        if self.terminate_on_pause:
+            raise TerminationRequested
         super().pause()
 
 
@@ -101,8 +110,11 @@ class AdaptiveKernelCase(KernelEmulatorCase):
         direction="min",
         faults=None,
         pause_after_attempt=None,
+        terminate_on_pause=False,
+        ask_delay=0.0,
     ):
         scheduler = PausingScheduler()
+        scheduler.terminate_on_pause = terminate_on_pause
         self.device_mgr.virtual_devices["scheduler"] = scheduler
         exp = self.create(FeedbackScan)
         fragment = exp.fragment
@@ -140,6 +152,7 @@ class AdaptiveKernelCase(KernelEmulatorCase):
             "skip_on_persistent_transitory_error": True,
         }
         exp.prepare()
+        objective_sink = fragment.objective.sink
         core = self.device_mgr.get("core")
         compile_functions = []
         compile_seconds = []
@@ -153,10 +166,26 @@ class AdaptiveKernelCase(KernelEmulatorCase):
             finally:
                 compile_seconds.append(time.perf_counter() - start)
 
+        real_ask = CoordinateSearchOptimizer.ask
+        delayed_asks = []
+
+        def delayed_ask(optimizer):
+            if fragment.attempts:
+                delayed_asks.append(len(fragment.attempts))
+                time.sleep(ask_delay)
+            return real_ask(optimizer)
+
         start = time.perf_counter()
         with patch.object(core, "compile", side_effect=record_compile):
-            exp.run()
+            if ask_delay:
+                assert algorithm == "coordinate_search"
+                with patch.object(CoordinateSearchOptimizer, "ask", delayed_ask):
+                    exp.run()
+            else:
+                exp.run()
         wall_seconds = time.perf_counter() - start
+        self.assertIs(fragment.objective.sink, objective_sink)
+        self.assertEqual(fragment.device_cleanup_count, 1)
 
         prefix = "ndscan.rid_0."
         datasets = {
@@ -168,7 +197,10 @@ class AdaptiveKernelCase(KernelEmulatorCase):
                 or key == prefix + "completed"
             )
         }
-        self.assertTrue(datasets["completed"])
+        if terminate_on_pause:
+            self.assertFalse(datasets.get("completed", False))
+        else:
+            self.assertTrue(datasets["completed"])
         self.assertEqual(
             datasets.get("points.axis_0", []), datasets.get("points.channel_host_x", [])
         )
@@ -181,6 +213,8 @@ class AdaptiveKernelCase(KernelEmulatorCase):
             "pauses": scheduler.pauses,
             "host_setup_count": fragment.host_setup_count,
             "host_cleanup_count": fragment.host_cleanup_count,
+            "device_cleanup_count": fragment.device_cleanup_count,
+            "delayed_asks": delayed_asks,
         }
 
     def assert_acquisitions(self, result, raw, evaluations, compiles):
@@ -201,8 +235,10 @@ class AdaptiveKernelCase(KernelEmulatorCase):
         self.assert_acquisitions(r, 12, 12, 1)
 
     def test_bayesian_single_compile(self):
-        r = self.run_case(algorithm="bayesian", budget=14)
-        self.assert_acquisitions(r, 14, 14, 1)
+        # n_init is now per dimension: 20 initial samples in 2D, then
+        # four model-driven requests.
+        r = self.run_case(algorithm="bayesian", budget=24)
+        self.assert_acquisitions(r, 24, 24, 1)
 
     def test_repeats_span_chunk_boundaries(self):
         r = self.run_case(budget=39, repeats=13, averaging="median")
@@ -248,6 +284,22 @@ class AdaptiveKernelCase(KernelEmulatorCase):
         r = self.run_case(budget=6, repeats=3, pause_after_attempt=0)
         self.assert_acquisitions(r, 6, 2, 2)
         self.assertEqual(r["pauses"], 1)
+
+    def test_slow_optimizer_rpc(self):
+        r = self.run_case(budget=12, repeats=3, ask_delay=0.5)
+        self.assert_acquisitions(r, 12, 4, 1)
+        self.assertEqual(r["delayed_asks"], [3, 6, 9])
+
+    def test_terminate_during_persistent_acquisition(self):
+        r = self.run_case(
+            budget=30, repeats=3, pause_after_attempt=3, terminate_on_pause=True
+        )
+        self.assertEqual(r["pauses"], 1)
+        self.assertEqual(len(r["compiles"]), 1)
+        self.assertGreaterEqual(len(r["attempts"]), 4)
+        self.assertLess(len(r["attempts"]), 30)
+        self.assertEqual(r["host_setup_count"], r["host_cleanup_count"])
+        self.assertEqual(r["device_cleanup_count"], 1)
 
     def test_all_skipped_candidate(self):
         r = self.run_case(budget=9, repeats=3, faults=dict.fromkeys(range(6), 1))
