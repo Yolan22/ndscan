@@ -670,7 +670,7 @@ class BayesianOptimizer(Optimizer):
 
         #  generate LHS samples
         sampler = LatinHypercube(
-            d=self.n_params, seed=self.seed
+            d=self.n_params,optimization="random-cd", seed=self.seed
         )  # LHS sampler seeded from the run's seed
 
         unit_samples = sampler.random(
