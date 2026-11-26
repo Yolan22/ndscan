@@ -213,7 +213,9 @@ class OptimizerCase(HasEnvironmentCase):
         self.assertEqual(robust.get_sim_time(), 0.0)
         point = tuple(robust.ask())
         robust.tell(point, 1.0, 0.0)
-        self.assertAlmostEqual(robust.init_y_var[-1].item(), 1e-3)
+        # every point gets the calibrated noise of a reference-subtracted value,
+        # whatever std is told: 0.0391 * sqrt(2 / 3), squared
+        self.assertAlmostEqual(robust.init_y_var[-1].item(), 0.0391**2 * 2 / 3)
 
         simple = BayesianOptimizer(
             (0.0,),
@@ -227,7 +229,10 @@ class OptimizerCase(HasEnvironmentCase):
         )
         point = tuple(simple.ask())
         simple.tell(point, 1.0, 0.0)
-        self.assertEqual(simple.init_y_var[-1].item(), 0.0)
+        # stored in both modes, but only robust mode passes it to the GP (train_Yvar)
+        self.assertAlmostEqual(
+            simple.init_y_var[-1].item(), simple.calibrated_objective_var
+        )
 
     def test_default_nelder_mead_simplex_uses_half_bounds_span(self):
         self.assertEqual(
@@ -288,7 +293,11 @@ class OptimizerCase(HasEnvironmentCase):
         best_point, best_value = opt.best()
         self.assertEqual(tuple(best_point), tuple(second_point))
         self.assertEqual(best_value, case["std_best_value"])
-        self.assertEqual(opt.best_std(), 0.25)
+        # the Bayesian optimiser stores its calibrated noise instead of the told std
+        expected_std = (
+            opt.calibrated_objective_std if case["name"] == "bayesian" else 0.25
+        )
+        self.assertAlmostEqual(opt.best_std(), expected_std)
 
     def _check_converges_1d(self, case):
         if case["name"] == "bayesian":
@@ -768,9 +777,10 @@ class FragmentOptimizeExpCase(HasEnvironmentCase):
         self.assertAlmostEqual(
             self.dataset_db.get("ndscan.rid_0.optimizer.best_value"), 3.0
         )
+        # standard error of the mean of [9, 0, 0]: std(ddof=1) / sqrt(3) = 3.0
         self.assertAlmostEqual(
             self.dataset_db.get("ndscan.rid_0.optimizer.best_std"),
-            4.242640687119285,
+            3.0,
         )
         self.assertEqual(
             self.dataset_db.get("ndscan.rid_0.optimizer.evaluations.objective"),
