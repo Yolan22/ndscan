@@ -107,7 +107,7 @@ class BayesianOptimizer(Optimizer):
         _load_ml_dependencies()
 
         # select the acquisition function type
-        self.acq_func_type = "logEI"
+        self.acq_func_type = "logNEI"
 
         #    if acq_func_type is None:
         #        self.acq_func_type = "logEI"
@@ -145,11 +145,13 @@ class BayesianOptimizer(Optimizer):
         self.ei_fraction = float(ei_fraction)
 
         # simulation parameters
-        self.n_init = (
-            int(n_init * np.sqrt(self.n_params))
-            if self.n_params >= 3
-            else self.n_params * n_init
-        )
+        # self.n_init = (
+        #     int(n_init * np.sqrt(self.n_params))
+        #     if self.n_params >= 3
+        #     else self.n_params * n_init
+        # )
+
+        self.n_init = self.n_params * n_init
 
         # One seed for the whole run: the Latin-hypercube start AND every later
         # iteration (see get_next_points) derive from it, so the same seed and the
@@ -168,6 +170,19 @@ class BayesianOptimizer(Optimizer):
         self.init_y = torch.empty((0, 1), dtype=torch.double)
         self.init_y_var = torch.empty((0, 1), dtype=torch.double)
         self.best_init_y = float("inf")
+
+        # Pooled reference-shot noise calibration
+        self.reference_shot_std = 0.0391
+        self.num_repeats_per_point = 3
+
+        # Standard error of the mean of 3 independent shots
+        self.calibrated_objective_std = (
+            self.reference_shot_std / np.sqrt(self.num_repeats_per_point)
+        )
+
+        # Variance supplied to the GP
+        self.calibrated_objective_var = self.calibrated_objective_std**2
+
 
     def ask(self) -> tuple[float, ...]:
         """
@@ -247,12 +262,12 @@ class BayesianOptimizer(Optimizer):
         ))  # update y-values
 
         # add small noise floor for numerical stability in GP fitting
-        noise_floor = 1e-3 if self.noise_robust_mode else 0.0
-        obs_var = max(std_dev**2, noise_floor)
+        noise_floor = 1e-6 if self.noise_robust_mode else 0.0
+        obs_var = self.calibrated_objective_var
         self.init_y_var = torch.cat((
             self.init_y_var,
-            torch.tensor(obs_var, dtype=torch.double).reshape(1, 1),
-        ))  # update y-variances
+            torch.tensor(obs_var, dtype=torch.double).reshape(1, 1)
+        )) # update y-variances
         # obtain the best point so far
         self.best_init_y = self.init_y.max().item()
 
@@ -401,7 +416,7 @@ class BayesianOptimizer(Optimizer):
         window = self.x_predictions[-(self.conv_delay + 1) :]
         values = [v for v, _ in window]
         latest_x = window[-1][1]
-        noise = float(torch.sqrt(self.train_y_var.clamp_min(0.0)).median().item())
+        noise = self.calibrated_objective_std
         self.last_convergence = {
             "spread": max(values) - min(values),
             "ftol": max(self._fatol, noise),
