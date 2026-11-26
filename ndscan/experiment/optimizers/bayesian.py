@@ -145,11 +145,13 @@ class BayesianOptimizer(Optimizer):
         self.ei_fraction = float(ei_fraction)
 
         # simulation parameters
-        self.n_init = (
-            int(n_init * np.sqrt(self.n_params))
-            if self.n_params >= 3
-            else self.n_params * n_init
-        )
+        # self.n_init = (
+        #     int(n_init * np.sqrt(self.n_params))
+        #     if self.n_params >= 3
+        #     else self.n_params * n_init
+        # )
+
+        self.n_init = self.n_params * n_init
 
         # One seed for the whole run: the Latin-hypercube start AND every later
         # iteration (see get_next_points) derive from it, so the same seed and the
