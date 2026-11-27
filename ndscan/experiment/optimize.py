@@ -353,8 +353,15 @@ class OptimizeRunner(HasEnvironment):
                     current_objective_samples[:repeats_per_point],
                     spec.acquisition.averaging_method,
                 )
-                objective_std_dev = float(
-                    np.std(current_objective_samples[:repeats_per_point])
+                samples = np.asarray(
+                    current_objective_samples[:repeats_per_point],
+                    dtype=float,
+                )
+                objective_std_dev = (
+                    float(np.std(samples, ddof=1) / np.sqrt(len(samples)))
+                    if len(samples) > 1
+                    else float(
+                    np.std(current_objective_samples[:repeats_per_point]))
                 )
                 num_evals_used += repeats_per_point
 
