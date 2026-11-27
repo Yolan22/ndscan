@@ -200,9 +200,8 @@ def select_generator_class(
     available, so each integer is visited at most once and refining scans
     terminate.
     """
-    if param_type == "int":
-        if (cls := INT_GENERATORS.get(scan_type)) is not None:
-            return cls
+    if param_type == "int" and (cls := INT_GENERATORS.get(scan_type)) is not None:
+        return cls
     return GENERATORS.get(scan_type)
 
 
@@ -269,10 +268,10 @@ class ArgumentInterface(HasEnvironment):
             except KeyError:
                 raise KeyError(
                     "Experiment does not have parameters matching "
-                    f"overrride for FQN '{fqn}' "
+                    f"override for FQN '{fqn}' "
                     + "(likely due to outdated argument editor after "
                     + "changes to experiment; try Recompute All Arguments)"
-                )
+                ) from None
             stores[fqn] = [
                 (
                     s["path"],
@@ -302,7 +301,7 @@ class ArgumentInterface(HasEnvironment):
                     f"scan axis with FQN '{fqn}' "
                     + "(likely due to outdated argument editor after "
                     + "changes to experiment; try Recompute All Arguments)"
-                )
+                ) from None
 
             generator_class = select_generator_class(axspec["type"], schema["type"])
             if not generator_class:
@@ -386,17 +385,20 @@ class TopLevelRunner(HasEnvironment):
         self.dataset_prefix = dataset_prefix
 
         self._is_time_series = False
-        if self.execution_mode == ExecutionMode.scan and not self.spec.axes:
-            if no_axes_mode == NoAxesMode.time_series:
-                self._is_time_series = True
-                param_schema = {
-                    "type": "float",
-                    "fqn": "timestamp",
-                    "description": "Elapsed time",
-                    "default": "0.0",
-                    "spec": {"min": 0.0, "unit": "s", "scale": 1.0},
-                }
-                self.spec.axes = [ScanAxis(param_schema, "*", None)]
+        if (
+            self.execution_mode == ExecutionMode.scan
+            and not self.spec.axes
+            and no_axes_mode == NoAxesMode.time_series
+        ):
+            self._is_time_series = True
+            param_schema = {
+                "type": "float",
+                "fqn": "timestamp",
+                "description": "Elapsed time",
+                "default": "0.0",
+                "spec": {"min": 0.0, "unit": "s", "scale": 1.0},
+            }
+            self.spec.axes = [ScanAxis(param_schema, "*", None)]
 
         # Initialise result channels.
         chan_dict = {}
@@ -538,7 +540,7 @@ class TopLevelRunner(HasEnvironment):
     def _make_coordinate_dict(self):
         return OrderedDict(
             ((a.param_schema["fqn"], a.path), s.get_all())
-            for a, s in zip(self.spec.axes, self._coordinate_sinks)
+            for a, s in zip(self.spec.axes, self._coordinate_sinks, strict=True)
         )
 
     def _make_value_dict(self):
@@ -702,6 +704,7 @@ class _NoAxisRunner(HasEnvironment):
                     self.num_current_transitory_errors = 0
                     self.num_current_underflows = 0
                 except RTIOUnderflow:
+                    self._discard_point()
                     self.num_current_underflows += 1
                     if self.num_current_underflows > self.max_rtio_underflow_retries:
                         raise
@@ -713,6 +716,7 @@ class _NoAxisRunner(HasEnvironment):
                         ")",
                     )
                 except RestartKernelTransitoryError:
+                    self._discard_point()
                     self.num_current_transitory_errors += 1
                     if (
                         self.num_current_transitory_errors
@@ -728,6 +732,7 @@ class _NoAxisRunner(HasEnvironment):
                     )
                     return False
                 except TransitoryError:
+                    self._discard_point()
                     self.num_current_transitory_errors += 1
                     if (
                         self.num_current_transitory_errors
@@ -745,7 +750,7 @@ class _NoAxisRunner(HasEnvironment):
         finally:
             self._remove_result_batcher()
             self.fragment.device_cleanup()
-        assert False, "Execution never reaches here, return is just to pacify compiler."
+        assert False, "Execution never reaches here, return is just to pacify compiler."  # noqa: B011
         return True
 
     @rpc(flags={"async"})
@@ -757,6 +762,10 @@ class _NoAxisRunner(HasEnvironment):
     def _remove_result_batcher(self):
         self._result_batcher.remove()
         self._result_batcher = None
+
+    @rpc(flags={"async"})
+    def _discard_point(self):
+        self._result_batcher.discard_current()
 
     @rpc(flags={"async"})
     def _finish_point(self):
@@ -773,6 +782,7 @@ def make_fragment_scan_exp(
     *args,
     max_rtio_underflow_retries: int = 3,
     max_transitory_error_retries: int = 10,
+    **kwargs,
 ) -> type[FragmentScanExperiment]:
     """Create a :class:`FragmentScanExperiment` subclass that scans the given
     :class:`.ExpFragment`, ready to be picked up by the ARTIQ explorer/…
@@ -787,12 +797,15 @@ def make_fragment_scan_exp(
                 # ...
 
         MyExpFragmentScan = make_fragment_scan_exp(MyExpFragment)
+
+    :param args: Any arguments to forward to ``build_fragment()``.
+    :param kwargs: Any keyword arguments to forward to ``build_fragment()``.
     """
 
     class FragmentScanShim(FragmentScanExperiment):
         def build(self):
             super().build(
-                lambda: fragment_class(self, [], *args),
+                lambda: fragment_class(self, [], *args, **kwargs),
                 max_rtio_underflow_retries=max_rtio_underflow_retries,
                 max_transitory_error_retries=max_transitory_error_retries,
             )
@@ -885,7 +898,7 @@ class _FragmentRunner(HasEnvironment):
                     )
         finally:
             self.fragment.device_cleanup()
-        assert False, "Execution never reaches here, return is just to pacify compiler."
+        assert False, "Execution never reaches here, return is just to pacify compiler."  # noqa: B011
         return True
 
 
@@ -893,7 +906,7 @@ def run_fragment_once(
     fragment: ExpFragment,
     max_rtio_underflow_retries: int = 3,
     max_transitory_error_retries: int = 10,
-    overrides: dict[str, list[tuple[str, ParamStore]]] = {},
+    overrides: dict[str, list[tuple[str, ParamStore]]] | None = None,
 ) -> dict[ResultChannel, Any]:
     """Initialise the passed fragment and run it once, capturing and returning the
     values from any result channels.
@@ -939,7 +952,7 @@ def create_and_run_fragment_once(
     *args,
     max_rtio_underflow_retries: int = 3,
     max_transitory_error_retries: int = 10,
-    overrides: dict[str, list[tuple[str, ParamStore]]] = {},
+    overrides: dict[str, list[tuple[str, ParamStore]]] | None = None,
     **kwargs,
 ) -> dict[str, Any]:
     """Create an instance of the passed :class:`.ExpFragment` type and runs it once,
@@ -973,7 +986,5 @@ def create_and_run_fragment_once(
         max_transitory_error_retries=max_transitory_error_retries,
         overrides=overrides,
     )
-    shortened_names = _shorten_result_channel_names(
-        channel.path for channel in results.keys()
-    )
+    shortened_names = _shorten_result_channel_names(channel.path for channel in results)
     return {shortened_names[channel.path]: value for channel, value in results.items()}
