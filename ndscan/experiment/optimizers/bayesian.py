@@ -253,22 +253,18 @@ class BayesianOptimizer(Optimizer):
             return
 
         # convert to torch tensors and append the data set with the new point(s)
-        self.init_y = torch.cat(
-            (
-                self.init_y,
-                torch.tensor(-value, dtype=torch.double).reshape(1, 1),
-            )
-        )  # update y-values
+        self.init_y = torch.cat((
+            self.init_y,
+            torch.tensor(-value, dtype=torch.double).reshape(1, 1),
+        ))  # update y-values
 
         # add small noise floor for numerical stability in GP fitting
         noise_floor = 1e-3 if self.noise_robust_mode else 0.0
         obs_var = max(std_dev**2, noise_floor)
-        self.init_y_var = torch.cat(
-            (
-                self.init_y_var,
-                torch.tensor(obs_var, dtype=torch.double).reshape(1, 1),
-            )
-        )  # update y-variances
+        self.init_y_var = torch.cat((
+            self.init_y_var,
+            torch.tensor(obs_var, dtype=torch.double).reshape(1, 1),
+        ))  # update y-variances
         # obtain the best point so far
         self.best_init_y = self.init_y.max().item()
 
@@ -336,13 +332,11 @@ class BayesianOptimizer(Optimizer):
             x_pred = self.model.posterior(self.train_x).mean.max().item()
             ei = ExpectedImprovement(self.model, best_f=x_pred)
             sobol = torch.quasirandom.SobolEngine(self.n_params, scramble=True, seed=0)
-            pts = torch.cat(
-                [
-                    candidates.reshape(-1, self.n_params).double(),
-                    self.train_x.double(),
-                    sobol.draw(2048, dtype=torch.double),
-                ]
-            )
+            pts = torch.cat([
+                candidates.reshape(-1, self.n_params).double(),
+                self.train_x.double(),
+                sobol.draw(2048, dtype=torch.double),
+            ])
             return float(ei(pts.unsqueeze(1)).max().item())
 
     # Previous convergence check, kept for reference. It
@@ -409,12 +403,10 @@ class BayesianOptimizer(Optimizer):
             # obtain the GP posterior mean = best predicted objective value
             mean = self.model.posterior(self.train_x).mean.squeeze(-1)
         best = int(torch.argmax(mean).item())  # model space maximises -objective
-        self.x_predictions.append(
-            (
-                -mean[best].item(),
-                self.train_x[best].detach().clone(),
-            )
-        )
+        self.x_predictions.append((
+            -mean[best].item(),
+            self.train_x[best].detach().clone(),
+        ))
 
         # check after max(conv_delay, 2 * n_params) BO iterations
         if len(self.x_predictions) <= max(self.conv_delay, 2 * self.n_params):
@@ -518,13 +510,13 @@ class BayesianOptimizer(Optimizer):
         best_f_standardized = (
             self.best_init_y - self.model.outcome_transform.means.item()
         ) / self.model.outcome_transform.stdvs.item()
-    
+
         # define quasi-MC N(0,1) sampler that uses Sobol sequences
         qmc_sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.mc_samples]))
 
         # # obtain the objective and constraint callables
         # objective = GenericMCObjective(objective=self.obj_callable)
-        
+
         # # transform a model's posterior
         # weights = torch.tensor([1.0])  # add more weights for multi-output objective
         # posterior_transform = ScalarizedPosteriorTransform(weights, offset=0.0)
@@ -551,7 +543,7 @@ class BayesianOptimizer(Optimizer):
         elif self.acq_func_type == "logNEI":
             acq_func = qLogNoisyExpectedImprovement(
                 model=self.model,
-                # X_baseline=X_baseline_pruned,
+                X_baseline=self.train_x,
                 prune_baseline=True,  # remove redundant baseline points
                 sampler=qmc_sampler,
                 cache_root=True,  # Caches Cholesky decomposition
@@ -675,12 +667,10 @@ class BayesianOptimizer(Optimizer):
             - unit_bounds : ((2, d') tensor) unit bounds
         """
         # create bounds
-        unit_bounds = torch.stack(
-            [
-                torch.zeros(self.n_params, dtype=torch.double),
-                torch.ones(self.n_params, dtype=torch.double),
-            ]
-        )
+        unit_bounds = torch.stack([
+            torch.zeros(self.n_params, dtype=torch.double),
+            torch.ones(self.n_params, dtype=torch.double),
+        ])
         return unit_bounds
 
     def LHS_sampler(self):
