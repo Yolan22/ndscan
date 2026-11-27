@@ -106,7 +106,7 @@ class BayesianOptimizer(Optimizer):
         _load_ml_dependencies()
 
         # select the acquisition function type
-        self.acq_func_type = "logEI"
+        self.acq_func_type = "logNEI"
 
         #    if acq_func_type is None:
         #        self.acq_func_type = "logEI"
@@ -169,6 +169,17 @@ class BayesianOptimizer(Optimizer):
         self.init_y = torch.empty((0, 1), dtype=torch.double)
         self.init_y_var = torch.empty((0, 1), dtype=torch.double)
         self.best_init_y = float("inf")
+
+        # Pooled reference-shot noise calibration
+        self.reference_shot_std = 0.07
+        self.num_repeats_per_point = 3
+
+        # Candidate mean minus independent reference mean
+        self.calibrated_objective_std = self.reference_shot_std * np.sqrt(
+            2 / self.num_repeats_per_point
+        )
+
+        self.calibrated_objective_var = self.calibrated_objective_std**2
 
     def ask(self) -> tuple[float, ...]:
         """
@@ -411,7 +422,7 @@ class BayesianOptimizer(Optimizer):
         window = self.x_predictions[-(self.conv_delay + 1) :]
         values = [v for v, _ in window]
         latest_x = window[-1][1]
-        noise = float(torch.sqrt(self.train_y_var.clamp_min(0.0)).median().item())
+        noise = self.calibrated_objective_std
         self.last_convergence = {
             "spread": max(values) - min(values),
             "ftol": max(self._fatol, noise),
@@ -507,23 +518,24 @@ class BayesianOptimizer(Optimizer):
         best_f_standardized = (
             self.best_init_y - self.model.outcome_transform.means.item()
         ) / self.model.outcome_transform.stdvs.item()
-        # obtain the objective and constraint callables
-        objective = GenericMCObjective(objective=self.obj_callable)
-
+    
         # define quasi-MC N(0,1) sampler that uses Sobol sequences
         qmc_sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.mc_samples]))
 
-        # transform a model's posterior
-        weights = torch.tensor([1.0])  # add more weights for multi-output objective
-        posterior_transform = ScalarizedPosteriorTransform(weights, offset=0.0)
+        # # obtain the objective and constraint callables
+        # objective = GenericMCObjective(objective=self.obj_callable)
+        
+        # # transform a model's posterior
+        # weights = torch.tensor([1.0])  # add more weights for multi-output objective
+        # posterior_transform = ScalarizedPosteriorTransform(weights, offset=0.0)
 
         # add manual pruning of baseline for logNEI
-        X_baseline_pruned = prune_inferior_points(
-            model=self.model,
-            X=self.train_x,
-            objective=objective,
-            posterior_transform=posterior_transform,
-        )
+        # X_baseline_pruned = prune_inferior_points(
+        #     model=self.model,
+        #     X=self.train_x,
+        #     objective=objective,
+        #     posterior_transform=posterior_transform,
+        # )
 
         # initialize class for the different AF's
         if self.acq_func_type == "EI":
@@ -539,7 +551,7 @@ class BayesianOptimizer(Optimizer):
         elif self.acq_func_type == "logNEI":
             acq_func = qLogNoisyExpectedImprovement(
                 model=self.model,
-                X_baseline=X_baseline_pruned,
+                # X_baseline=X_baseline_pruned,
                 prune_baseline=True,  # remove redundant baseline points
                 sampler=qmc_sampler,
                 cache_root=True,  # Caches Cholesky decomposition
