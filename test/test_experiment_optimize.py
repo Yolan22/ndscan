@@ -174,20 +174,33 @@ class OptimizerCase(HasEnvironmentCase):
             all(point[0] != 0.0 and point[1] != 0.0 for point in first_points[1:])
         )
 
-    
     def test_bayesian_robust_mode_is_seeded_and_converges(self):
         first = BayesianOptimizer(
-            (0.0,), (-2.0,), (2.0,), xatol=0.08, fatol=0.02, n_init=4, user_seed=42,
-            conv_delay=5, ei_fraction=0.25,
+            (0.0,),
+            (-2.0,),
+            (2.0,),
+            xatol=0.08,
+            fatol=0.02,
+            n_init=4,
+            user_seed=42,
+            conv_delay=5,
+            ei_fraction=0.25,
         )
         second = BayesianOptimizer(
-            (0.0,), (-2.0,), (2.0,), xatol=0.08, fatol=0.02, n_init=4, user_seed=42,
-            conv_delay=5, ei_fraction=0.25,
+            (0.0,),
+            (-2.0,),
+            (2.0,),
+            xatol=0.08,
+            fatol=0.02,
+            n_init=4,
+            user_seed=42,
+            conv_delay=5,
+            ei_fraction=0.25,
         )
         self.assertEqual(tuple(first.ask()), tuple(second.ask()))
 
         point = tuple(first.x[0])
-        first.tell(point, (point[0] - 0.7) ** 2, 0.01,  0.0, 3)
+        first.tell(point, (point[0] - 0.7) ** 2, 0.01, 0.0, 3)
         num_evals = 1
         while num_evals < 20 and (point := first.ask()) is not None:
             point = tuple(point)
@@ -199,6 +212,7 @@ class OptimizerCase(HasEnvironmentCase):
         self.assertAlmostEqual(best_point[0], 0.7, delta=0.15)
         self.assertLess(best_value, 0.03)
 
+    
     def test_bayesian_sampling_and_noise_modes(self):
         robust = BayesianOptimizer(
             (0.0, 0.0),
@@ -734,6 +748,49 @@ class FragmentOptimizeExpCase(HasEnvironmentCase):
             [2.0, 10.0 / 6.0, 0.9],
         )
 
+    def test_reference_noise_is_pooled_over_references(self):
+        from unittest import mock
+
+        import ndscan.experiment.optimize as optimize_module
+
+        created = []
+        original = optimize_module.create_optimizer
+
+        def capture(spec):
+            created.append(original(spec))
+            return created[-1]
+
+        exp = self.create(RepeatOutlierScanExp)
+        exp.args._params["execution_mode"] = "optimise"
+        exp.args._params["optimise"] = {
+            "parameters": [
+                {
+                    "fqn": "test_experiment_optimize.RepeatOutlierFragment.x",
+                    "path": "*",
+                    "min": -1.0,
+                    "max": 1.0,
+                    "initial": 0.0,
+                }
+            ],
+            "objective": {"channel": "objective", "direction": "min"},
+            "algorithm": {"kind": "bayesian", "n_init": 10, "user_seed": 1},
+            # reference, 2 candidates, reference, ...: 3 references in 27 shots
+            "max_evals": 27,
+            "num_repeats_per_point": 3,
+            "averaging_method": "mean",
+            "reference_normalisation": "subtract",
+            "reference_resample_interval": 2,
+            "skip_on_persistent_transitory_error": False,
+        }
+        with mock.patch.object(optimize_module, "create_optimizer", capture):
+            exp.prepare()
+            exp.run()
+
+        # every reference is the shots [9, 0, 0]: per-shot variance 27 (ddof=1)
+        opt = created[0]
+        self.assertAlmostEqual(opt.reference_shot_std, 27**0.5)
+        self.assertAlmostEqual(opt.calibrated_objective_std, (27 * 2 / 3) ** 0.5)
+
     def test_mean_aggregates_repeated_objective_values(self):
         exp = self.create(RepeatOutlierScanExp)
         exp.args._params["execution_mode"] = "optimise"
@@ -770,7 +827,7 @@ class FragmentOptimizeExpCase(HasEnvironmentCase):
         )
         self.assertAlmostEqual(
             self.dataset_db.get("ndscan.rid_0.optimizer.best_std"),
-            4.242640687119285,
+            3.0,  # standard error of [9, 0, 0]: std(ddof=1) / sqrt(3)
         )
         self.assertEqual(
             self.dataset_db.get("ndscan.rid_0.optimizer.evaluations.objective"),
