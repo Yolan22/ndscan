@@ -1,8 +1,8 @@
 import logging
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from copy import deepcopy
-from typing import Any, Callable
+from typing import Any
 
 from artiq.language import HasEnvironment, kernel, kernel_from_string, portable, rpc
 
@@ -67,7 +67,7 @@ class Fragment(HasEnvironment):
 
         #: Maps own attribute name to the ParamHandles of the rebound parameters in
         #: their original subfragment.
-        self._rebound_subfragment_params = dict()
+        self._rebound_subfragment_params = {}
 
         #: List of (param, store) tuples of parameters set to their defaults after
         #: init_params().
@@ -429,8 +429,8 @@ class Fragment(HasEnvironment):
             f"Original owner does not have a field of name '{original_name}'"
         )
         assert original_name in original_owner._free_params, (
-            "Field '{}' is not a free parameter of original owner; "
-            "already rebound?".format(original_name)
+            f"Field '{original_name}' is not a free parameter of original owner; "
+            "already rebound?"
         )
 
         template_param = original_owner._free_params[original_name]
@@ -619,7 +619,9 @@ class Fragment(HasEnvironment):
             schema = param.describe()
             if fqn in schemata:
                 if schemata[fqn] != schema:
-                    logger.warn("Mismatch in parameter schema '%s' for '%s'", fqn, path)
+                    logger.warning(
+                        "Mismatch in parameter schema '%s' for '%s'", fqn, path
+                    )
             else:
                 schemata[fqn] = schema
 
@@ -652,7 +654,7 @@ class Fragment(HasEnvironment):
         self._detached_subfragments.add(fragment)
 
     def init_params(
-        self, overrides: dict[str, list[tuple[str, ParamStore]]] = {}
+        self, overrides: dict[str, list[tuple[str, ParamStore]]] | None = None
     ) -> None:
         """Initialise free parameters of this fragment and all its subfragments.
 
@@ -671,6 +673,8 @@ class Fragment(HasEnvironment):
             Each override is specified as a tuple `(pathspec, store)` of a path spec and
             the store to use for parameters the path of which matches the spec.
         """
+        if overrides is None:
+            overrides = {}
         for name, param in self._free_params.items():
             store = None
             for override_pathspec, override_store in overrides.get(param.fqn, []):
@@ -685,10 +689,10 @@ class Fragment(HasEnvironment):
                 identity = (param.fqn, self._stringize_path())
                 try:
                     value = param.eval_default(self._get_dataset_or_set_default)
-                except Exception:
+                except Exception as e:
                     raise ValueError(
-                        "Error while evaluating default value for '{}'".format(identity)
-                    )
+                        f"Error while evaluating default value for '{identity}'"
+                    ) from e
                 store = param.make_store(identity, value)
                 self._default_params.append((param, store))
 
@@ -760,7 +764,7 @@ class Fragment(HasEnvironment):
 
                     return shown
         """
-        return [getattr(self, name) for name in self._free_params.keys()]
+        return [getattr(self, name) for name in self._free_params]
 
     def _get_all_handles_for_param(self, name: str) -> list[ParamHandle]:
         return [getattr(self, name)] + self._rebound_subfragment_params.get(name, [])
@@ -991,7 +995,6 @@ class TransitoryError(Exception):
     from user code, it will often be appropriate to do this as well, unless the user
     code base does not use transitory errors at all.
     """
-
 
 class RestartKernelTransitoryError(TransitoryError):
     """:class:`.TransitoryError` where, as part of recovering from it, the kernel should
