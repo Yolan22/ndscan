@@ -353,16 +353,10 @@ class OptimizeRunner(HasEnvironment):
                     current_objective_samples[:repeats_per_point],
                     spec.acquisition.averaging_method,
                 )
-                samples = np.asarray(
-                    current_objective_samples[:repeats_per_point],
-                    dtype=float,
-                )
-                objective_std_dev = (
-                    float(np.std(samples, ddof=1) / np.sqrt(len(samples)))
-                    if len(samples) > 1
-                    else float(
+
+                objective_std_dev =  float(
                     np.std(current_objective_samples[:repeats_per_point]))
-                )
+
                 num_evals_used += repeats_per_point
 
                 if current_point_kind == "reference":
@@ -378,7 +372,8 @@ class OptimizeRunner(HasEnvironment):
                         reference_normalisation,
                     )
                     if normalised is None:
-                        optimizer.tell(current_point, float("inf"), 0.0)
+                        optimizer.tell(current_point, float("inf"), 0.0,
+                                       0.0, 3)
                         if on_evaluation is not None:
                             on_evaluation(
                                 current_point,
@@ -404,6 +399,8 @@ class OptimizeRunner(HasEnvironment):
                             current_point,
                             transformed,
                             objective_std_dev,
+                            reference_std_dev,
+                            repeats_per_point,
                         )
                     candidates_since_reference += 1
                     publish_best()
@@ -418,7 +415,7 @@ class OptimizeRunner(HasEnvironment):
                     termination_reason = "reference_measurement_failed"
                     return
 
-                optimizer.tell(current_point, float("inf"), 0.0)
+                optimizer.tell(current_point, float("inf"), 0.0, 0.0, 3)
                 if on_evaluation is not None:
                     on_evaluation(
                         current_point,
