@@ -27,7 +27,7 @@ from .optimizers import (
     build_algorithm_spec,
 )
 from .result_channels import AppendingDatasetSink, NumericChannel, ResultSink
-from .scan_runner import ScanAxis, select_runner_class
+from .scan_runner import KernelScanRunner, ScanAxis, select_runner_class
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,8 @@ def select_objective_channel(
     if not channel.save_by_default:
         raise ValueError("Optimisation objective channel must be saved by default")
     if not isinstance(channel, NumericChannel):
-        raise ValueError(
+        # Invalid user-selected objective, rather than an invalid call signature.
+        raise ValueError(  # noqa: TRY004
             "Optimisation objective channel must be numeric (float or int)"
         )
     if spec.objective.direction not in {"min", "max"}:
@@ -209,7 +210,7 @@ def format_best_result(
     entries = [
         f"Objective: {_format_numeric_value(value, objective_channel.describe())}"
     ]
-    for axis, axis_value in zip(spec.axes, point):
+    for axis, axis_value in zip(spec.axes, point, strict=True):
         name = axis.param_schema["fqn"].split(".")[-1]
         entries.append(
             f"{name}: {_format_numeric_value(axis_value, axis.param_schema['spec'])}"
@@ -312,137 +313,191 @@ class OptimizeRunner(HasEnvironment):
         point_loaded = False
         num_points_recorded = 0
         termination_reason: str | None = None
+        # ResultBatcher temporarily replaces the channel's sink while a kernel
+        # is active. Read the original (committed) sink, not its per-shot proxy.
+        objective_sink = objective_channel.sink
+
+        def choose_point() -> bool:
+            nonlocal current_point, current_point_kind, point_loaded
+            if use_reference and (
+                reference_value is None
+                or candidates_since_reference
+                >= spec.acquisition.reference_resample_interval
+            ):
+                current_point = reference_point
+                current_point_kind = "reference"
+            else:
+                current_point = optimizer.ask()
+                if current_point is None:
+                    return False
+                current_point_kind = "candidate"
+            current_objective_samples.clear()
+            point_loaded = False
+            return True
+
+        def process_results(completed: bool) -> None:
+            """Process newly acknowledged shots; finish a group when exhausted."""
+            nonlocal num_points_recorded, num_evals_used, current_point
+            nonlocal current_point_kind, point_loaded, termination_reason
+            nonlocal reference_value, reference_std_dev, candidates_since_reference
+            new_count = len(axis_sinks[0].get_all())
+            if new_count != num_points_recorded:
+                current_objective_samples.extend(
+                    float(v)
+                    for v in objective_sink.get_all()[num_points_recorded:new_count]
+                )
+                num_points_recorded = new_count
+
+            if len(current_objective_samples) >= repeats_per_point:
+                objective_value = _aggregate_objective_samples(
+                    current_objective_samples[:repeats_per_point],
+                    spec.acquisition.averaging_method,
+                )
+
+                objective_std_dev =  float(
+                    np.std(current_objective_samples[:repeats_per_point]))
+
+                num_evals_used += repeats_per_point
+
+                if current_point_kind == "reference":
+                    reference_value = objective_value
+                    reference_std_dev = objective_std_dev
+                    candidates_since_reference = 0
+                else:
+                    normalised = _normalise_objective_value(
+                        objective_value,
+                        objective_std_dev,
+                        reference_value,
+                        reference_std_dev,
+                        reference_normalisation,
+                    )
+                    if normalised is None:
+                        optimizer.tell(current_point, float("inf"), 0.0,
+                                       0.0, 3)
+                        if on_evaluation is not None:
+                            on_evaluation(
+                                current_point,
+                                float("nan"),
+                                float("nan"),
+                                num_points_recorded - 1,
+                            )
+                    else:
+                        objective_value, objective_std_dev = normalised
+                        if on_evaluation is not None:
+                            on_evaluation(
+                                current_point,
+                                objective_value,
+                                objective_std_dev,
+                                num_points_recorded - 1,
+                            )
+                        transformed = (
+                            objective_value
+                            if spec.objective.direction == "min"
+                            else -objective_value
+                        )
+                        optimizer.tell(
+                            current_point,
+                            transformed,
+                            objective_std_dev,
+                            reference_std_dev,
+                            repeats_per_point,
+                        )
+                    candidates_since_reference += 1
+                    publish_best()
+
+                current_objective_samples.clear()
+                current_point = None
+                current_point_kind = None
+                point_loaded = False
+            elif completed:
+                num_evals_used += repeats_per_point
+                if current_point_kind == "reference":
+                    termination_reason = "reference_measurement_failed"
+                    return
+
+                optimizer.tell(current_point, float("inf"), 0.0, 0.0, 3)
+                if on_evaluation is not None:
+                    on_evaluation(
+                        current_point,
+                        float("nan"),
+                        float("nan"),
+                        max(num_points_recorded - 1, 0),
+                    )
+                candidates_since_reference += 1
+                current_objective_samples.clear()
+                current_point = None
+                current_point_kind = None
+                point_loaded = False
+
+        def finished() -> bool:
+            nonlocal termination_reason
+            if termination_reason is not None:
+                return True
+            if optimizer.is_done():
+                termination_reason = optimizer.termination_reason()
+                return True
+            if num_evals_used >= max_evals:
+                termination_reason = "max_evals_reached"
+                return True
+            return False
+
+        # The kernel runner requests another batch only after the previous batch
+        # is fully consumed. Keep the candidate fixed until all its repeats have
+        # been issued and acknowledged (including skipped shots).
+        remaining_to_issue = 0
+
+        def get_points(limit: int) -> list[tuple]:
+            nonlocal remaining_to_issue
+            if termination_reason is not None:
+                return []
+            if current_point is not None and remaining_to_issue == 0:
+                process_results(completed=True)
+            if finished():
+                return []
+            if current_point is None:
+                if not choose_point():
+                    return []
+                remaining_to_issue = repeats_per_point
+            count = min(limit, remaining_to_issue)
+            remaining_to_issue -= count
+            return [current_point] * count
+
+        persistent_kernel = isinstance(point_runner, KernelScanRunner)
+        provider_set = False
         try:
-            while not optimizer.is_done():
+            while not finished():
                 fragment.recompute_param_defaults()
                 try:
                     fragment.host_setup()
-                    while not optimizer.is_done() and num_evals_used < max_evals:
-                        if current_point is None:
-                            if use_reference and (
-                                reference_value is None
-                                or candidates_since_reference
-                                >= spec.acquisition.reference_resample_interval
-                            ):
-                                current_point = reference_point
-                                current_point_kind = "reference"
-                            else:
-                                current_point = optimizer.ask()
-                                if current_point is None:
-                                    break
-                                current_point_kind = "candidate"
-                            current_objective_samples.clear()
-                            point_loaded = False
-                        if not point_loaded:
-                            point_runner.set_points(
-                                repeat(current_point, repeats_per_point)
-                            )
-                            point_loaded = True
-
-                        completed = point_runner.acquire(device_cleanup=False)
-
-                        new_count = len(axis_sinks[0].get_all())
-                        if new_count != num_points_recorded:
-                            current_objective_samples.extend(
-                                float(v)
-                                for v in objective_channel.sink.get_all()[
-                                    num_points_recorded:new_count
-                                ]
-                            )
-                            num_points_recorded = new_count
-
-                        if len(current_objective_samples) >= repeats_per_point:
-                            objective_value = _aggregate_objective_samples(
-                                current_objective_samples[:repeats_per_point],
-                                spec.acquisition.averaging_method,
-                            )
-                            samples = np.asarray(
-                                current_objective_samples[:repeats_per_point],
-                                dtype=float,
-                            )
-
-                            objective_std_dev = (
-                                float(np.std(samples, ddof=1) / np.sqrt(len(samples)))
-                                if len(samples) > 1
-                                else 0.0
-                            )
-                            num_evals_used += repeats_per_point
-
-                            if current_point_kind == "reference":
-                                reference_value = objective_value
-                                reference_std_dev = objective_std_dev
-                                candidates_since_reference = 0
-                            else:
-                                normalised = _normalise_objective_value(
-                                    objective_value,
-                                    objective_std_dev,
-                                    reference_value,
-                                    reference_std_dev,
-                                    reference_normalisation,
+                    if persistent_kernel:
+                        if not provider_set:
+                            provider_set = point_runner.set_point_provider(get_points)
+                        if provider_set:
+                            completed = point_runner.acquire(device_cleanup=False)
+                            if completed:
+                                # A temporarily empty optimiser queue retains the
+                                # previous pause/resume behaviour.
+                                provider_set = False
+                            elif current_point is not None:
+                                # A pause/restart retains unconsumed points. Only
+                                # collect acknowledged results, not a new candidate.
+                                process_results(completed=False)
+                    else:
+                        # Retain the existing per-candidate host runner lifecycle.
+                        while not finished():
+                            if current_point is None and not choose_point():
+                                break
+                            if not point_loaded:
+                                point_runner.set_points(
+                                    repeat(current_point, repeats_per_point)
                                 )
-                                if normalised is None:
-                                    optimizer.tell(current_point, float("inf"), 0.0)
-                                    if on_evaluation is not None:
-                                        on_evaluation(
-                                            current_point,
-                                            float("nan"),
-                                            float("nan"),
-                                            num_points_recorded - 1,
-                                        )
-                                else:
-                                    objective_value, objective_std_dev = normalised
-                                    if on_evaluation is not None:
-                                        on_evaluation(
-                                            current_point,
-                                            objective_value,
-                                            objective_std_dev,
-                                            num_points_recorded - 1,
-                                        )
-                                    transformed = (
-                                        objective_value
-                                        if spec.objective.direction == "min"
-                                        else -objective_value
-                                    )
-                                    optimizer.tell(
-                                        current_point,
-                                        transformed,
-                                        objective_std_dev,
-                                    )
-                                candidates_since_reference += 1
-                                publish_best()
+                                point_loaded = True
+                            completed = point_runner.acquire(device_cleanup=False)
+                            process_results(completed)
+                            if not completed:
+                                break
 
-                            current_objective_samples.clear()
-                            current_point = None
-                            current_point_kind = None
-                            point_loaded = False
-                        elif completed:
-                            num_evals_used += repeats_per_point
-                            if current_point_kind == "reference":
-                                termination_reason = "reference_measurement_failed"
-                                return
-
-                            optimizer.tell(current_point, float("inf"), 0.0)
-                            if on_evaluation is not None:
-                                on_evaluation(
-                                    current_point,
-                                    float("nan"),
-                                    float("nan"),
-                                    max(num_points_recorded - 1, 0),
-                                )
-                            candidates_since_reference += 1
-                            current_objective_samples.clear()
-                            current_point = None
-                            current_point_kind = None
-                            point_loaded = False
-
-                        if not completed:
-                            break
-
-                    if optimizer.is_done():
-                        termination_reason = optimizer.termination_reason()
-                        return
-                    if num_evals_used >= max_evals:
-                        termination_reason = "max_evals_reached"
+                    if finished():
                         return
                 finally:
                     fragment.host_cleanup()
@@ -497,7 +552,7 @@ class OptimizeResultPublisher:
         aggregated candidate evaluation back to the last raw acquisition contributing
         to it, allowing history views to hide future evaluations correctly.
         """
-        for sink, axis_value in zip(self._evaluation_axis_sinks, point):
+        for sink, axis_value in zip(self._evaluation_axis_sinks, point, strict=True):
             sink.push(axis_value)
         self._evaluation_objective_sink.push(value)
         self._evaluation_std_sink.push(std_dev)
