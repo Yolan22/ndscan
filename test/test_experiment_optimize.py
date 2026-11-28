@@ -120,7 +120,7 @@ def _evaluate_optimizer(opt, objective):
     num_evals = 0
     while (point := opt.ask()) is not None:
         num_evals += 1
-        opt.tell(point, objective(point))
+        opt.tell(point, objective(point), 0.0, 0.0, 3)
     return num_evals
 
 
@@ -187,11 +187,11 @@ class OptimizerCase(HasEnvironmentCase):
         self.assertEqual(tuple(first.ask()), tuple(second.ask()))
 
         point = tuple(first.x[0])
-        first.tell(point, (point[0] - 0.7) ** 2, 0.01)
+        first.tell(point, (point[0] - 0.7) ** 2, 0.01,  0.0, 3)
         num_evals = 1
         while num_evals < 20 and (point := first.ask()) is not None:
             point = tuple(point)
-            first.tell(point, (point[0] - 0.7) ** 2, 0.01)
+            first.tell(point, (point[0] - 0.7) ** 2, 0.01, 0.0, 3)
             num_evals += 1
 
         best_point, best_value = first.best()
@@ -212,7 +212,7 @@ class OptimizerCase(HasEnvironmentCase):
         self.assertEqual(robust.n_init, 6)
         self.assertEqual(robust.get_sim_time(), 0.0)
         point = tuple(robust.ask())
-        robust.tell(point, 1.0, 0.0)
+        robust.tell(point, 1.0, 0.0, 0.0, 3)
         self.assertAlmostEqual(robust.init_y_var[-1].item(), 1e-3)
 
         simple = BayesianOptimizer(
@@ -226,7 +226,7 @@ class OptimizerCase(HasEnvironmentCase):
             robust_mode=False,
         )
         point = tuple(simple.ask())
-        simple.tell(point, 1.0, 0.0)
+        simple.tell(point, 1.0, 0.0, 0.0, 3)
         self.assertEqual(simple.init_y_var[-1].item(), 0.0)
 
     def test_default_nelder_mead_simplex_uses_half_bounds_span(self):
@@ -280,10 +280,10 @@ class OptimizerCase(HasEnvironmentCase):
 
         first_point = opt.ask()
         self.assertIsNotNone(first_point)
-        opt.tell(first_point, case["std_values"][0], 0.125)
+        opt.tell(first_point, case["std_values"][0], 0.125, 0.0, 3)
         second_point = opt.ask()
         self.assertIsNotNone(second_point)
-        opt.tell(second_point, case["std_values"][1], 0.25)
+        opt.tell(second_point, case["std_values"][1], 0.25, 0.0, 3)
 
         best_point, best_value = opt.best()
         self.assertEqual(tuple(best_point), tuple(second_point))

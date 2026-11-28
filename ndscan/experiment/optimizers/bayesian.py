@@ -70,7 +70,7 @@ def _load_ml_dependencies() -> None:
 
 @dataclass
 class BayesianOptimizerOptimizeAlgorithmSpec(OptimizeAlgorithmSpec):
-    xatol: float = 1e-3
+    xatol: float = 1e-3 
     fatol: float = 1e-3
     n_init: int = 10
     user_seed: int = -1
@@ -168,18 +168,7 @@ class BayesianOptimizer(Optimizer):
         self.init_y_var = torch.empty((0, 1), dtype=torch.double)
         self.best_init_y = float("inf")
 
-        # Pooled reference-shot noise calibration
-        self.reference_shot_std = 0.07
-        self.num_repeats_per_point = 3
 
-        # Candidate mean minus independent reference mean
-        self.calibrated_objective_std = (
-            self.reference_shot_std
-            * np.sqrt(2 / self.num_repeats_per_point)
-        )
-
-        self.calibrated_objective_var = (
-            self.calibrated_objective_std ** 2)
 
     def ask(self) -> tuple[float, ...]:
         """
@@ -234,8 +223,8 @@ class BayesianOptimizer(Optimizer):
         return None
 
     def tell(
-        self, point: tuple[float, ...], value: float, std_dev: float = 0.0
-    ) -> None:
+        self, point: tuple[float, ...], value: float, std_dev: float = 0.0,
+        ref_std_dev: float = 0.0, repeats: int = 3) -> None:
         """
         Runs the experiment for the given parameters by :meth:`ask`
         and updates the measured objective value and its standard deviation.
@@ -252,6 +241,19 @@ class BayesianOptimizer(Optimizer):
         if self._termination_reason is not None:
             return
 
+        # Pooled reference-shot noise calibration
+        self.reference_shot_std = ref_std_dev
+        self.num_repeats_per_point = repeats
+
+        # Candidate mean minus independent reference mean
+        self.calibrated_objective_std = (
+            self.reference_shot_std
+            * np.sqrt(2 / self.num_repeats_per_point)
+        )
+
+        self.calibrated_objective_var = (
+            self.calibrated_objective_std ** 2)
+        
         # convert to torch tensors and append the data set with the new point(s)
         self.init_y = torch.cat(
             (
@@ -550,7 +552,7 @@ class BayesianOptimizer(Optimizer):
         elif self.acq_func_type == "logNEI":
             acq_func = qLogNoisyExpectedImprovement(
                 model=self.model,
-                # X_baseline=X_baseline_pruned,
+                X_baseline=self.train_x,
                 prune_baseline=True,  # remove redundant baseline points
                 sampler=qmc_sampler,
                 cache_root=True,  # Caches Cholesky decomposition

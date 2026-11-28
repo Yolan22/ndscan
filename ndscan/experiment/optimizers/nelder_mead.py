@@ -81,8 +81,8 @@ class NelderMeadOptimizer(Optimizer):
         return None
 
     def tell(
-        self, point: tuple[float, ...], value: float, std_dev: float = 0.0
-    ) -> None:
+        self, point: tuple[float, ...], value: float, std_dev: float = 0.0, 
+        ref_std_dev: float = 0.0, repeats:int = 3) -> None:
         # When we are told the value for a point we need to update the simplex
         del point
 

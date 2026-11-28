@@ -90,8 +90,8 @@ class CoordinateSearchOptimizer(Optimizer):
         return tuple(self._pending_point.tolist())
 
     def tell(
-        self, point: tuple[float, ...], value: float, std_dev: float = 0.0
-    ) -> None:
+        self, point: tuple[float, ...], value: float, std_dev: float = 0.0,
+        ref_std_dev: float = 0.0, repeats:int = 3) -> None:
         del point
 
         if self._termination_reason is not None or self._pending_point is None:
