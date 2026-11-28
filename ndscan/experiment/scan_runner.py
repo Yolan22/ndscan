@@ -7,7 +7,7 @@ will likely be used by end users via
 """
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any
@@ -185,7 +185,7 @@ class ResultBatcher:
         """Discard any results that may have been pushed already (e.g. if a point was
         interrupted.)
         """
-        for channel in self._orig_sinks.keys():
+        for channel in self._orig_sinks:
             if channel.sink.is_set():
                 # This is normal, e.g. when a transitory error interrupts a point.
                 logger.debug("Discarding result for '%s'", channel)
@@ -196,7 +196,7 @@ class ResultBatcher:
         forward the results to the original sinks.
         """
         # First check whether we have all the values.
-        for channel in self._orig_sinks.keys():
+        for channel in self._orig_sinks:
             if not channel.sink.is_set():
                 raise ResultLifecycleError(
                     f"Missing value for result channel '{channel}' "
@@ -247,7 +247,9 @@ class HostScanRunner(ScanRunner):
                         self._current_axis_values = next(self._points, None)
                         if self._current_axis_values is None:
                             return True
-                    for axis, value in zip(self._axes, self._current_axis_values):
+                    for axis, value in zip(
+                        self._axes, self._current_axis_values, strict=True
+                    ):
                         axis.param_store.set_value(value)
                     self._fragment.device_setup()
                     self._fragment.run_once()
@@ -255,7 +257,9 @@ class HostScanRunner(ScanRunner):
                     result_batcher.ensure_complete_and_push()
                     # Now that we know self._fragment successfully produced a complete
                     # point, also record the axis coordinates.
-                    for sink, value in zip(self._axis_sinks, self._current_axis_values):
+                    for sink, value in zip(
+                        self._axis_sinks, self._current_axis_values, strict=True
+                    ):
                         sink.push(value)
                     self._current_axis_values = None
 
@@ -314,10 +318,29 @@ class KernelScanRunner(ScanRunner):
 
     def set_points(self, points: Iterator[tuple]) -> None:
         self._points = points
+        self._point_provider = None
         # Stash away points in current kernel chunk until they have been marked
         # complete so we can resume from interruptions.
         self._current_chunk = []
         self._update_host_param_stores()
+
+    def set_point_provider(self, provider: Callable[[int], list[tuple]]) -> bool:
+        """Supply batches whose values may depend on the preceding results.
+
+        The provider receives a maximum batch size and may return fewer points.
+        It is called only when the preceding batch has been fully consumed,
+        including skipped points. An empty batch signals completion. The first
+        batch is fetched here to initialise host-side parameter stores before
+        compilation; subsequent batches are fetched by synchronous kernel RPCs.
+        Unconsumed points are retained across kernel interruptions.
+
+        Returns whether the provider supplied any points.
+        """
+        self._point_provider = provider
+        self._point_provider_exhausted = False
+        self._current_chunk = []
+        self._get_param_values_chunk()
+        return bool(self._current_chunk)
 
     _RUN_CHUNK_PROCEED = 0
     _RUN_CHUNK_INTERRUPTED = 1
@@ -331,7 +354,7 @@ class KernelScanRunner(ScanRunner):
         code += "    return self._RUN_CHUNK_SCAN_COMPLETE\n"
         code += "for i in range(len(p0)):\n"
         for idx in range(num_axes):
-            code += "    self._param_setter_{0}(p{0}[i])\n".format(idx)
+            code += f"    self._param_setter_{idx}(p{idx}[i])\n"
         code += "    if self._run_point():\n"
         code += "        return self._RUN_CHUNK_INTERRUPTED\n"
         code += "return self._RUN_CHUNK_PROCEED"
@@ -366,7 +389,7 @@ class KernelScanRunner(ScanRunner):
             self._remove_result_batcher()
             if device_cleanup:
                 self._fragment.device_cleanup()
-        assert False, "Execution never reaches here, return is just to pacify compiler."
+        assert False, "Execution never reaches here, return is just to pacify compiler."  # noqa: B011
         return True
 
     @kernel
@@ -438,13 +461,22 @@ class KernelScanRunner(ScanRunner):
         # memory management issues on the kernel.
         CHUNK_SIZE = 10
 
-        self._current_chunk.extend(
-            islice(self._points, CHUNK_SIZE - len(self._current_chunk))
-        )
+        if self._point_provider is None:
+            self._current_chunk.extend(
+                islice(self._points, CHUNK_SIZE - len(self._current_chunk))
+            )
+        else:
+            if not self._current_chunk and not self._point_provider_exhausted:
+                points = self._point_provider(CHUNK_SIZE)
+                if len(points) > CHUNK_SIZE:
+                    raise ValueError("Point provider exceeded requested batch size")
+                self._current_chunk.extend(points)
+                self._point_provider_exhausted = not points
+            self._update_host_param_stores()
 
         values = tuple([] for _ in self._axes)
         for p in self._current_chunk:
-            for i, (value, axis) in enumerate(zip(p, self._axes)):
+            for i, (value, axis) in enumerate(zip(p, self._axes, strict=True)):
                 # KLUDGE: Explicitly coerce value to the target type here so we can use
                 # the regular (float) scans for integers until proper support for int
                 # scans is implemented.
@@ -477,7 +509,7 @@ class KernelScanRunner(ScanRunner):
         # Now that we know that a complete point was successfully produced, also record
         # the axis coordinates.
         values = self._current_chunk.pop(0)
-        for value, sink in zip(values, self._axis_sinks):
+        for value, sink in zip(values, self._axis_sinks, strict=True):
             sink.push(value)
 
         # Prepare for the next point.
@@ -496,15 +528,17 @@ class KernelScanRunner(ScanRunner):
             return
         # Set the host-side parameter stores.
         next_values = self._current_chunk[0]
-        for value, axis in zip(next_values, self._axes):
+        for value, axis in zip(next_values, self._axes, strict=True):
             axis.param_store.set_value(axis.param_store.value_from_pyon(value))
 
     @host_only
     def _is_out_of_points(self):
         if self._current_chunk:
             return False
-        # Current chunk is empty, but we might be at a chunk boundary.
-        self._get_param_values_chunk()
+        # A feedback-dependent provider must not be advanced from asynchronous
+        # point-completion RPCs. The next blocking chunk request refills it.
+        if self._point_provider is None:
+            self._get_param_values_chunk()
         return not self._current_chunk
 
 
@@ -542,7 +576,7 @@ def filter_default_analyses(
     result = []
     for analysis in fragment.get_default_analyses():
         if not isinstance(analysis, DefaultAnalysis):
-            raise ValueError(
+            raise TypeError(
                 f"Unexpected get_default_analyses() return value for {fragment}: "
                 "Expected list of ndscan.experiment.DefaultAnalysis instances, got "
                 f"element of type '{analysis}'"
@@ -571,7 +605,8 @@ def describe_scan(
         }
         for ax in spec.axes
     ]
-    for ax, gen in zip(axis_specs, spec.generators):
+    # Time series scans have a synthetic timestamp axis without a generator.
+    for ax, gen in zip(axis_specs, spec.generators, strict=False):
         gen.describe_limits(ax)
 
     desc["axes"] = axis_specs
