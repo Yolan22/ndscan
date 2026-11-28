@@ -92,6 +92,33 @@ class AddOneCustomAnalysisFragment(AddOneFragment):
         ]
 
 
+class AddOneTextAnnotationsFragment(AddOneFragment):
+    def get_default_analyses(self):
+        return [
+            CustomAnalysis(
+                {self.value},
+                self._analyze,
+                [
+                    FloatChannel("centre", unit="ms"),
+                    FloatChannel("centre_err", unit="ms"),
+                ],
+            )
+        ]
+
+    def _analyze(self, axis_values, result_values, analysis_results):
+        analysis_results["centre"].push(1.5e-3)
+        analysis_results["centre_err"].push(0.1e-3)
+        return [
+            annotations.note("Hello", associated_channels=[self.result]),
+            annotations.named_value(
+                "Centre",
+                analysis_results["centre"],
+                analysis_results["centre_err"],
+                associated_channels=[self.result],
+            ),
+        ]
+
+
 class TrivialKernelFragment(ExpFragment):
     def build_fragment(self):
         pass
@@ -180,6 +207,21 @@ class MultiPointTransitoryErrorFragment(TransitoryErrorFragment):
         super().run_once()
         self.point_idx += 1
         self.reset_counters()
+
+
+class PartialResultTransitoryErrorFragment(MultiPointTransitoryErrorFragment):
+    """MultiPointTransitoryErrorFragment that pushes to an extra result channel before
+    the error is raised in run_once(), to test that partial results are discarded when
+    a point is retried.
+    """
+
+    def build_fragment(self, *args, **kwargs):
+        super().build_fragment(*args, **kwargs)
+        self.setattr_result("partial_result", IntChannel)
+
+    def run_once(self):
+        self.partial_result.push(self.value.get())
+        super().run_once()
 
 
 class RequestTerminationFragment(ExpFragment):
