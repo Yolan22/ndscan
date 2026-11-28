@@ -257,7 +257,7 @@ class ArgumentEditor(QtWidgets.QTreeWidget, OverrideProvider):
         super().__init__()
 
         self.manager = manager
-        self.dock = expurl
+        self.dock = dock
         self.expurl = expurl
 
         self.setColumnCount(3)
@@ -294,9 +294,12 @@ class ArgumentEditor(QtWidgets.QTreeWidget, OverrideProvider):
         self._save_timer.timeout.connect(self._save_to_argument)
 
         self._param_entries = OrderedDict()
-        self._groups = dict()
-        self._arg_to_widgets = dict()
-        self._override_items = dict()
+        self._groups = {}
+        self._arg_to_widgets = {}
+        self._override_items = {}
+
+        # Keep references to running tasks, as the event loop only holds weak ones.
+        self._background_tasks = set()
 
         self._add_override_icon = load_icon_cached("list-add-32.png")
         self._open_param_tree_icon = load_icon_cached("view-list-tree-32.png")
@@ -566,7 +569,7 @@ class ArgumentEditor(QtWidgets.QTreeWidget, OverrideProvider):
         if name in self._arg_to_widgets:
             logger.warning("Argument with name '%s' already exists, skipping.", name)
             return
-        widgets = dict()
+        widgets = {}
         self._arg_to_widgets[name] = widgets
 
         entry = procdesc_to_entry(argument["desc"])(argument)
@@ -710,7 +713,7 @@ class ArgumentEditor(QtWidgets.QTreeWidget, OverrideProvider):
     def _set_override_line_active(self):
         self._update_param_choice_map()
         self._add_override_prompt_box.set_choices(
-            [(s, 0) for s in self._param_choice_map.keys()]
+            [(s, 0) for s in self._param_choice_map]
         )
 
         self._add_override_line.setEnabled(False)
@@ -745,18 +748,17 @@ class ArgumentEditor(QtWidgets.QTreeWidget, OverrideProvider):
         return group
 
     def _recompute_vanilla_argument_clicked(self, name):
-        asyncio.ensure_future(self._recompute_vanilla_argument(name))
+        task = asyncio.ensure_future(self._recompute_vanilla_argument(name))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _recompute_vanilla_argument(self, name):
         try:
             class_desc, _ui_name = await self.manager.compute_expdesc(self.expurl)
             arginfo = class_desc["arginfo"]
         except Exception:
-            logger.error(
-                "Could not recompute argument '%s' of '%s'",
-                name,
-                self.expurl,
-                exc_info=True,
+            logger.exception(
+                "Could not recompute argument '%s' of '%s'", name, self.expurl
             )
             return
         argument = self.manager.get_submission_arguments(self.expurl)[name]
@@ -794,7 +796,7 @@ class ArgumentEditor(QtWidgets.QTreeWidget, OverrideProvider):
         self._set_save_timer()
 
     def _update_param_choice_map(self):
-        self._param_choice_map = dict()
+        self._param_choice_map = {}
 
         def add(fqn, path):
             # Skip params already displayed.
@@ -940,7 +942,7 @@ class OverrideEntry(LayoutWidget):
             ExecutionMode.optimise.name: 0,
         }
         self.options = []
-        for name, option_cls in option_classes.items():
+        for option_cls in option_classes.values():
             option = option_cls(self.schema, self.path)
             option.value_changed.connect(self.value_changed)
             container = QtWidgets.QWidget()
@@ -1016,7 +1018,7 @@ class OverrideEntry(LayoutWidget):
             value = eval_default_using_local_datasets(
                 self.schema["default"], manager_datasets
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(
                 'Failed to evaluate defaults string "%s" for %s: %s',
                 self.schema["default"],

@@ -35,9 +35,9 @@ def get_argparser():
 def main():
     args = get_argparser().parse_args()
 
-    path, datasets, prefixes, schema = load_h5(args)
+    path, datasets, prefixes, _ = load_h5(args)
     if len(prefixes) > 1:
-        raise Exception(
+        raise ValueError(
             "More than one ndscan prefix found. Please specify one. "
             + f"Prefixes: {prefixes}"
         )
@@ -75,7 +75,7 @@ def main():
     if len(np.unique(num_points)) != 1:
         print("Point data is not rectangular. Deleting incomplete last point(s).")
         min_len = np.min(num_points)
-        for key in point_data.keys():
+        for key in point_data:
             point_data[key] = point_data[key][:min_len]
 
     # Order by axis values, with x axis varying fastest

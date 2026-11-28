@@ -996,6 +996,7 @@ class TransitoryError(Exception):
     code base does not use transitory errors at all.
     """
 
+
 class RestartKernelTransitoryError(TransitoryError):
     """:class:`.TransitoryError` where, as part of recovering from it, the kernel should
     be restarted before retrying.

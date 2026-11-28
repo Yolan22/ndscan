@@ -42,7 +42,9 @@ class ScanGenerator:
 
 
 class RefiningGenerator(ScanGenerator):
-    """Generates progressively finer grid by halving distance between points each level."""
+    """Generates progressively finer grid by halving distance between points each
+    level.
+    """
 
     def __init__(self, lower, upper, randomise_order):
         self.lower = float(min(lower, upper))
@@ -222,9 +224,6 @@ class LinearGenerator(ScanGenerator):
     def args_from_centre_span(
         centre, half_span, num_points, randomise_order, limit_lower, limit_upper
     ):
-        num_points = num_points
-        randomise_order = randomise_order
-
         start = centre - half_span
         if limit_lower is not None:
             start = max(start, limit_lower)
@@ -538,7 +537,12 @@ def generate_points(
             if all(lvl < max_level for lvl in axis_levels):
                 # Previously visited this combination already.
                 continue
-            tp = product(*(p[lvl] for (lvl, p) in zip(axis_levels, axis_level_points)))
+            tp = product(
+                *(
+                    p[lvl]
+                    for (lvl, p) in zip(axis_levels, axis_level_points, strict=True)
+                )
+            )
             points.extend(tp)
 
         for _ in range(options.num_repeats):

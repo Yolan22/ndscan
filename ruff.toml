@@ -1,12 +1,64 @@
-line-length=88
+line-length = 88
 
 [format]
 line-ending = "lf"
 
 [lint]
-ignore =[
-    # Star imports are common in idiomatic ARTIQ code
-    "F403", "F405"
-]
-extend-select = ["I"]
+ignore = [
+    # Star imports are common in idiomatic ARTIQ code.
+    "F403",
+    "F405",
 
+    # Empty docstrings are used to hide derived methods in Sphinx output.
+    "D419",
+
+    # Empty comments are used in UI code with longer functions.
+    "PLR2044",
+
+    # Sphinx (autodoc_member_order = "bysource") relies on the order of __all__.
+    "RUF022",
+
+    # typing.Self is only available from Python 3.11.
+    "PYI034",
+
+    # Complexity/magic value heuristics are not worth the churn.
+    "PLR09",
+    "PLR2004",
+
+    # An if nested in an else block can represent the semantics better than elif,
+    # especially in combination with comments.
+    "PLR5501",
+
+    # Function-local imports are used to break import cycles.
+    "PLC0415",
+
+    # Explicit concatenation is used for long multi-line strings.
+    "ISC003",
+
+    # Purely stylistic; also, unpacking is not supported in ARTIQ kernels.
+    "RUF005",
+]
+extend-select = [
+    "I",
+    "ASYNC",
+    "B",
+    "C4",
+    "E",
+    "FURB",
+    "ISC",
+    "LOG",
+    "NPY",
+    "PGH",
+    "PL",
+    "RUF",
+    "W",
+]
+
+# En dashes, etc. are used deliberately in comments and UI strings.
+allowed-confusables = ["–", "×", "σ", "\u2009"]
+
+[lint.per-file-ignores]
+# The Bayesian backend deliberately loads the ML stack on first use.
+"ndscan/experiment/optimizers/bayesian.py" = ["PLW0603"]
+# Retain the existing module import path for compatibility.
+"ndscan/plots/optimise_Nd.py" = ["N999"]

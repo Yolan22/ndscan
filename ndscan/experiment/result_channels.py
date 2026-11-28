@@ -29,8 +29,6 @@ class ResultLifecycleError(RuntimeError):
     point.
     """
 
-    pass
-
 
 class ResultSink:
     """ """
@@ -324,9 +322,8 @@ class NumericChannel(ResultChannel):
                     scale = getattr(artiq.language.units, unit)
                 except AttributeError:
                     raise KeyError(
-                        "Unit {} is unknown, you must specify "
-                        "the scale manually".format(unit)
-                    )
+                        f"Unit {unit} is unknown, you must specify the scale manually"
+                    ) from None
         self.scale = scale
         self.unit = unit
 
@@ -337,7 +334,7 @@ class NumericChannel(ResultChannel):
     def get_last(self):
         """Returns the last value pushed to this result channel.
 
-        This method is a workaround for limitations of ARTIQ python, which make it
+        This method is a workaround for limitations of ARTIQ Python, which make it
         impractical to extract values from the sinks without going through RPCs.
         """
         if not self._value_pushed:

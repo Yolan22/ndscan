@@ -1,6 +1,6 @@
 [project]
 name = "ndscan"
-version = "v0.4.0"
+version = "v0.5.0.dev0"
 description = "Composable experiment fragments and multi-dimensional scans for ARTIQ"
 authors = [{ name = "David Nadlinger", email = "code@klickverbot.at" }]
 requires-python = ">=3.10"
@@ -35,7 +35,7 @@ ndscan_to_txt = "ndscan.to_txt:main"
 dev = [
     "matplotlib>=3.8.0",
     "poethepoet>=0.22.1",
-    "ruff>=0.14.11",
+    "ruff>=0.17.0",
     "sphinx-rtd-theme>=1.3.0",
     "sphinx>=7.2.6",
     "toml>=0.10.2",
@@ -43,7 +43,8 @@ dev = [
 
 [tool.uv.sources]
 artiq = { git = "https://github.com/m-labs/artiq.git", branch = "release-8" }
-oitg = { git = "https://github.com/oxfordiontrapgroup/oitg.git" }
+# Match the OITG revision in the laboratory ARTIQ environment and emulator.
+oitg = { git = "https://github.com/oxfordiontrapgroup/oitg.git", rev = "e8188b943be64ebc6864d16444407f4ed33dfa3c" }
 
 #.Pin SiPyCo to v1.9 for now to avoid PYON v2 fiasco (silent, breaking format change).
 sipyco = { git = "https://github.com/m-labs/sipyco.git", tag = "v1.9" }

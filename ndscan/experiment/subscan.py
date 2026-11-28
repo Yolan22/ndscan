@@ -70,7 +70,7 @@ class Subscan:
     def run(
         self,
         axis_generators: list[tuple[ParamHandle, ScanGenerator]],
-        options: ScanOptions = ScanOptions(),
+        options: ScanOptions | None = None,
         execute_default_analyses: bool = True,
     ) -> tuple[dict[ParamHandle, list], dict[ResultChannel, list]]:
         """Run the subscan with the given axis iteration specifications, and return the
@@ -99,8 +99,13 @@ class Subscan:
     def set_scan_spec(
         self,
         axis_generators: list[tuple[ParamHandle, ScanGenerator]],
-        options: ScanOptions = ScanOptions(),
+        options: ScanOptions | None = None,
     ):
+        if options is None:
+            # Avoid sharing mutable instances; also causes a new random seed unless
+            # options are specified.
+            options = ScanOptions()
+
         axes: list[ScanAxis] = []
         generators: list[ScanGenerator] = []
         self._coordinate_sinks = OrderedDict[ParamHandle, ArraySink]()
@@ -165,8 +170,10 @@ class Subscan:
 
     def _push_coordinates(self):
         coordinates = OrderedDict()
+        # There may be more coordinate channels than axes actually scanned (see
+        # setup_subscan()).
         for channel, (param, sink) in zip(
-            self._coordinate_channels, self._coordinate_sinks.items()
+            self._coordinate_channels, self._coordinate_sinks.items(), strict=False
         ):
             v = sink.get_all()
             coordinates[param] = v
@@ -212,7 +219,7 @@ class Subscan:
             for i, h in enumerate(coordinate_sinks.keys()):
                 if handle._store == h._store:
                     return i
-            assert False
+            raise AssertionError("Axis not found among coordinate sinks")
 
         context = AnnotationContext(
             get_axis_index,
@@ -561,7 +568,7 @@ class SubscanExpFragment(ExpFragment):
     def configure(
         self,
         axis_generators: list[tuple[ParamHandle, ScanGenerator]],
-        options: ScanOptions = ScanOptions(),
+        options: ScanOptions | None = None,
     ) -> None:
         """Configure point generators for each scan axis, and scan options.
 

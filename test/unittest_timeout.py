@@ -168,7 +168,7 @@ class ConciseFailureResult(unittest.TextTestResult):
         if os.environ.get("GITHUB_ACTIONS") != "true":
             return
 
-        for _kind, name, reason, path, line in self.concise_failures:
+        for _kind, name, reason, path, _line in self.concise_failures:
             properties = [f"title={_github_escape_property(name)}"]
             if path is not None:
                 properties.insert(0, f"file={_github_escape_property(path)}")
@@ -210,7 +210,7 @@ def _run_with_timeout(self, result=None):
 
 
 def install(timeout_seconds):
-    global _timeout_seconds
+    global _timeout_seconds  # noqa: PLW0603
     _timeout_seconds = timeout_seconds
     unittest.TestCase.run = _run_with_timeout
 

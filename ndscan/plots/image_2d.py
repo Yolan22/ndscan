@@ -18,7 +18,6 @@ from .model.subscan import create_subscan_roots
 from .plot_widgets import (
     SliceableMenuPanesWidget,
     add_source_id_label,
-    add_time_slider,
 )
 from .utils import (
     CONTRASTING_COLOR_TO_HIGHLIGHT,
@@ -42,8 +41,8 @@ logger = logging.getLogger(__name__)
 def _calc_range_spec(preset_min, preset_max, preset_increment, data):
     sorted_data = np.unique(data).astype(float)
 
-    lower = preset_min if preset_min else sorted_data[0]
-    upper = preset_max if preset_max else sorted_data[-1]
+    lower = preset_min if preset_min is not None else sorted_data[0]
+    upper = preset_max if preset_max is not None else sorted_data[-1]
 
     if preset_increment:
         increment = preset_increment
@@ -70,7 +69,7 @@ def _num_points_in_range(range_spec):
 
 
 def _coords_to_indices(coords, range_spec):
-    min, max, increment = range_spec
+    min, _, increment = range_spec
     return np.rint((np.array(coords) - min) / increment).astype(int)
 
 
@@ -243,6 +242,7 @@ class _ImagePlot:
             x_data[num_skip:num_to_show],
             y_data[num_skip:num_to_show],
             z_data[num_skip:num_to_show],
+            strict=True,
         ):
             avg, num = self.averages_by_coords.get((x, y), (0.0, 0))
             num += 1
@@ -280,7 +280,7 @@ class _ImagePlot:
 
         x_inds = _coords_to_indices(x_data[num_skip:num_to_show], self.x_range)
         y_inds = _coords_to_indices(y_data[num_skip:num_to_show], self.y_range)
-        for i, (x_idx, y_idx) in enumerate(zip(x_inds, y_inds)):
+        for i, (x_idx, y_idx) in enumerate(zip(x_inds, y_inds, strict=True)):
             data_idx = num_skip + i
             coords, z = (x_data[data_idx], y_data[data_idx]), z_data[data_idx]
             self.image_data[x_idx, y_idx] = (
@@ -442,7 +442,8 @@ class Image2DPlotWidget(SliceableMenuPanesWidget):
         self.slice_roots = create_slice_roots(self.model, self.selected_point_model)
 
         if self.time_slider is None and self.base_model.has_independent_history:
-            self.add_time_slider()
+            self.time_slider = self.add_time_slider(self.model)
+            self.time_slider.cutoff_changed.connect(self.time_cutoff_changed)
 
         self.ready.emit()
 
@@ -454,7 +455,12 @@ class Image2DPlotWidget(SliceableMenuPanesWidget):
             # If all points were unique so far, check if we have duplicates now.
             if not self.found_duplicate_coords:
                 num_skip = len(self.unique_coords)
-                for x in zip(points["axis_0"][num_skip:], points["axis_1"][num_skip:]):
+                # Axes can be of different lengths while a point is being appended.
+                for x in zip(
+                    points["axis_0"][num_skip:],
+                    points["axis_1"][num_skip:],
+                    strict=False,
+                ):
                     if x in self.unique_coords:
                         self.found_duplicate_coords = True
                         break
@@ -480,8 +486,8 @@ class Image2DPlotWidget(SliceableMenuPanesWidget):
             ):
                 action = builder.append_action(f"Set '{d}' from crosshair")
                 action.triggered.connect(
-                    lambda *a, axis_idx=axis_idx, d=d: (
-                        self._set_dataset_from_crosshair(d, axis_idx)
+                    lambda *a, axis_idx=axis_idx, d=d: self._set_dataset_from_crosshair(
+                        d, axis_idx
                     )
                 )
             if len(x_datasets) == 1 and len(y_datasets) == 1:
@@ -675,10 +681,6 @@ class Image2DPlotWidget(SliceableMenuPanesWidget):
             }
 
         view_box.setLimits(**kwargs)
-
-    def add_time_slider(self):
-        self.time_slider = add_time_slider(self.layout, self.scene(), self.model)
-        self.time_slider.cutoff_changed.connect(self.time_cutoff_changed)
 
     def time_cutoff_changed(self, cutoff: int):
         if cutoff == -1:

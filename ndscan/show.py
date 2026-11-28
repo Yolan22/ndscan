@@ -70,7 +70,7 @@ def get_argparser():
 
 def fetch_explicit_prefix(args):
     prefix = args.prefix
-    if prefix and not prefix[-1] == ".":
+    if prefix and prefix[-1] != ".":
         prefix += "."
     return prefix
 
@@ -99,7 +99,7 @@ def load_h5(args):
 
     try:
         file = h5py.File(path, "r")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         QtWidgets.QMessageBox.critical(None, "Unable to load file", str(e))
         sys.exit(1)
 
@@ -124,9 +124,8 @@ def load_h5(args):
             QtWidgets.QMessageBox.critical(
                 None,
                 "Not an ndscan file",
-                "Datasets '{}*' in file '{}' do not look like ndscan results.".format(
-                    prefix, args.path
-                ),
+                f"Datasets '{prefix}*' in file '{args.path}' do not look like ndscan "
+                "results.",
             )
             sys.exit(1)
         prefixes = [prefix]
@@ -143,7 +142,7 @@ def load_h5(args):
     expid = pyon.decode(file["expid"][()])
     try:
         schema = extract_param_schema(expid["arguments"])
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print("No ndscan parameter arguments found:", e)
         print()
         schema = None
@@ -190,7 +189,7 @@ def main():
         context.set_source_id(get_source_id(datasets, prefixes))
 
         roots = [HDF5Root(datasets, p, context, title) for p in prefixes]
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         QtWidgets.QMessageBox.critical(
             None,
             "Error parsing ndscan file",
@@ -206,7 +205,11 @@ def main():
         )
         widget = PlotAreaTabWidget(
             OrderedDict(
-                zip((strip_suffix(label_map[p], ".") for p in prefixes), roots)
+                zip(
+                    (strip_suffix(label_map[p], ".") for p in prefixes),
+                    roots,
+                    strict=True,
+                )
             ),
             context,
         )

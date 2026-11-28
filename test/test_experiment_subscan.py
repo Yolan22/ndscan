@@ -43,7 +43,7 @@ class SubscanCase(ExpFragmentCase):
     def _test_1d(self, parent, result_channel):
         coords, values = parent.run_once()
 
-        expected_values = [float(n) for n in range(0, 4)]
+        expected_values = [float(n) for n in range(4)]
         expected_results = [v + 1 for v in expected_values]
         self.assertEqual(coords, {parent.child.value: expected_values})
         self.assertEqual(values, {result_channel: expected_results})
@@ -52,7 +52,7 @@ class SubscanCase(ExpFragmentCase):
         parent = self.create(Scan1DFragment, AddOneFragment)
         results = run_fragment_once(parent)
 
-        expected_values = [float(n) for n in range(0, 4)]
+        expected_values = [float(n) for n in range(4)]
         expected_results = [v + 1 for v in expected_values]
         self.assertEqual(results[parent.scan_axis_0], expected_values)
         self.assertEqual(results[parent.scan_channel_result], expected_results)
@@ -208,11 +208,31 @@ class RunSubscanTwiceCase(ExpFragmentCase):
         parent = self.create(RunSubscanTwiceFragment)
         results = parent.run_once()
 
-        for base, (coords, values, _) in zip([0, 4], results):
+        for base, (coords, values, _) in zip([0, 4], results, strict=True):
             expected_values = [float(n) for n in range(base, base + 4)]
             expected_results = [v + 1 for v in expected_values]
             self.assertEqual(coords, {parent.child.value: expected_values})
             self.assertEqual(values, {parent.child.result: expected_results})
+
+
+class DefaultOptionsSubscanFragment(ExpFragment):
+    def build_fragment(self):
+        self.setattr_fragment("child", AddOneFragment)
+        setattr_subscan(self, "scan", self.child, [(self.child, "value")])
+
+    def run_once(self):
+        self.scan.run([(self.child.value, LinearGenerator(0, 3, 4, True))])
+
+
+class DefaultOptionsSubscanCase(ExpFragmentCase):
+    def test_fresh_seed(self):
+        # Each subscan run with default options should use a new random seed.
+        parent = self.create(DefaultOptionsSubscanFragment)
+        seeds = [
+            json.loads(run_fragment_once(parent)[parent.scan_spec])["seed"]
+            for _ in range(2)
+        ]
+        self.assertNotEqual(seeds[0], seeds[1])
 
 
 class SubscanAnalysisFragment(ExpFragment):

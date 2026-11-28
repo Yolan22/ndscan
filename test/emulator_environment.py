@@ -44,14 +44,16 @@ class KernelEmulatorCase(unittest.TestCase):
             exp = cls((self.device_mgr, self.dataset_mgr, arg_mgr, {}), *args, **kwargs)
         except DeviceError as e:
             # skip if ddb does not match requirements
-            raise unittest.SkipTest("test device not available: `{}`".format(*e.args))
+            raise unittest.SkipTest(
+                "test device not available: `{}`".format(*e.args)
+            ) from e
         return exp
 
     def execute(self, cls, *args, **kwargs):
         expid = {
             "file": sys.modules[cls.__module__].__file__,
             "class_name": cls.__name__,
-            "arguments": dict(),
+            "arguments": {},
         }
         self.device_mgr.virtual_devices["scheduler"].expid = expid
         try:
@@ -65,5 +67,5 @@ class KernelEmulatorCase(unittest.TestCase):
             raise error from None
         except Exception as exn:
             if hasattr(exn, "artiq_core_exception"):
-                exn.args = ("{}\n{}".format(exn.args[0], exn.artiq_core_exception),)
-            raise exn
+                exn.args = (f"{exn.args[0]}\n{exn.artiq_core_exception}",)
+            raise

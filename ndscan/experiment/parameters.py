@@ -338,8 +338,8 @@ def resolve_numeric_scale(scale: float | None, unit: str) -> float:
         return getattr(units, unit)
     except AttributeError:
         raise KeyError(
-            "Unit '{}' is unknown, you must specify the scale manually".format(unit)
-        )
+            f"Unit '{unit}' is unknown, you must specify the scale manually"
+        ) from None
 
 
 class ParamBase:
@@ -547,7 +547,7 @@ class StringParam(ParamBase):
         except NotImplementedError:
             # This parsed and called dataset(), so okay.
             pass
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Contrary to usual ndscan style, do not put quotation marks around the
             # value here and rather put it inside parentheses for clarity, as the user
             # error is likely to be missing quotes. Also do not chain this onto the
@@ -645,7 +645,7 @@ def _get_enum_compiler_types(
         class EnumParamStore(ParamStore):
             RpcType = int32
             # TODO: Make sure this is emitted efficiently as a global by the compiler.
-            instances = [o for o in enum_type]
+            instances = list(enum_type)  # noqa: RUF012
 
             @portable
             def _notify_handles(self):
@@ -731,12 +731,12 @@ class EnumParam(ParamBase):
             except NotImplementedError:
                 # This parsed and called dataset(), so okay.
                 pass
-            except Exception:
+            except Exception as e:
                 raise InvalidDefaultError(
                     "str default values for EnumParm must be valid PYON strings "
                     + "(including quotes) that evaluate to the name of an enum member "
                     + f'(got: "{default}")'
-                )
+                ) from e
         self.StoreType, self.HandleType = _get_enum_compiler_types(enum_class)
         super().__init__(
             fqn=fqn,

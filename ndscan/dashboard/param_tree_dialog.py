@@ -141,7 +141,8 @@ class ParamTreeDialog(QtWidgets.QDialog):
         self.right_pane.setLayout(QtWidgets.QVBoxLayout())
         self.right_pane.layout().setContentsMargins(3, 3, 3, 0)
 
-        # Use a read-only QTextEdit for display rather than a QLabel due to better line wrapping customisation. I'm
+        # Use a read-only QTextEdit for display rather than a QLabel due to better line
+        # wrapping customisation.
         self.text_edit = QtWidgets.QTextEdit(self)
         self.text_edit.setReadOnly(True)
         self.text_edit.setViewportMargins(0, 0, 0, 0)
@@ -245,7 +246,7 @@ class ParamTreeDialog(QtWidgets.QDialog):
         self.tree_widget.setUpdatesEnabled(False)
         self.tree_widget.clear()
 
-        self.fragment_tree_items = dict()
+        self.fragment_tree_items = {}
         # Lexicographic in particular also ensures that parents are first.
         paths = sorted(self.instances.keys())
         for path in paths:
@@ -329,5 +330,5 @@ class ParamTreeDialog(QtWidgets.QDialog):
                     schema["default"], self.manager_datasets
                 ),
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return f"<error evaluating default: {e}>"

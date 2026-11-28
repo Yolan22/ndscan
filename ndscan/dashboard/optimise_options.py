@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from artiq.gui.scientific_spinbox import ScientificSpinBox
 from artiq.gui.tools import disable_scroll_wheel
@@ -88,8 +88,8 @@ class ExecutionModeSelector(QtWidgets.QWidget):
 class OptimiseOptions:
     """Global controls that apply only to optimisation execution."""
 
-    _averaging_methods = {"Mean": "mean", "Median": "median"}
-    _reference_methods = {
+    _averaging_methods: ClassVar[dict[str, str]] = {"Mean": "mean", "Median": "median"}
+    _reference_methods: ClassVar[dict[str, str]] = {
         "None": "none",
         "Subtract": "subtract",
         "Divide": "divide",
@@ -158,7 +158,8 @@ class OptimiseOptions:
         self.averaging_box = QtWidgets.QComboBox()
         self.averaging_box.addItems(self._averaging_methods)
         self.averaging_box.setToolTip(
-            "How repeated objective measurements are combined before updating the optimiser"
+            "How repeated objective measurements are combined before "
+            "updating the optimiser"
         )
         averaging = current.get("averaging_method", "mean")
         self.averaging_box.setCurrentText(
@@ -180,7 +181,8 @@ class OptimiseOptions:
         self.reference_box = QtWidgets.QComboBox()
         self.reference_box.addItems(self._reference_methods)
         self.reference_box.setToolTip(
-            "Optionally normalise each candidate to the periodically remeasured initial point"
+            "Optionally normalise each candidate to the periodically "
+            "remeasured initial point"
         )
         reference_method = current.get("reference_normalisation", "none")
         self.reference_box.setCurrentText(
@@ -198,7 +200,8 @@ class OptimiseOptions:
         self.reference_interval_box = QtWidgets.QSpinBox()
         self.reference_interval_box.setRange(1, 10**7)
         self.reference_interval_box.setToolTip(
-            "Number of candidate evaluations between initial-point reference measurements"
+            "Number of candidate evaluations between initial-point "
+            "reference measurements"
         )
         self.reference_interval_box.setValue(
             current.get("reference_resample_interval", 1)
@@ -387,7 +390,7 @@ class OptimiseAxisOption(NumericScanOption):
     def build_ui(self, layout: QtWidgets.QLayout) -> None:
         lower, initial, upper = self._default_values()
         for (icon, tooltip, attr), value in zip(
-            _OPTIMISE_AXIS_FIELDS, (lower, initial, upper)
+            _OPTIMISE_AXIS_FIELDS, (lower, initial, upper), strict=True
         ):
             label = _make_icon_label(icon, tooltip)
             layout.addWidget(label)

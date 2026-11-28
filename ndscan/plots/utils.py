@@ -1,6 +1,8 @@
 import html
 import logging
-from typing import Any, Iterable
+from collections.abc import Iterable
+from contextlib import suppress
+from typing import Any
 
 import numpy as np
 
@@ -79,9 +81,7 @@ def extract_scalar_channels(
         err_name = path_to_name[err_path]
         if err_name in error_bar_names:
             raise ValueError(
-                "More than one set of error bars specified for channel '{}'".format(
-                    err_path
-                )
+                f"More than one set of error bars specified for channel '{err_path}'"
             )
         error_bar_names[err_name] = name
 
@@ -105,7 +105,7 @@ def get_default_hidden_channels(channels: dict[str, Any], data_names: list[str])
     :param data_names: List of channel names to consider. See
         :func:``extract_scalar_channels()``.
     """
-    hidden_channels = set(n for n in data_names if _get_priority(channels[n]) < 0)
+    hidden_channels = {n for n in data_names if _get_priority(channels[n]) < 0}
     # Even if all channels have negative priority, show at least one.
     if len(hidden_channels) < len(data_names):
         hidden_channels.discard(data_names[0])
@@ -288,17 +288,16 @@ def extract_linked_datasets(param_schema: dict[str, Any]) -> list[str]:
     :return: A list of dataset keys mentioned.
     """
     datasets = []
-    try:
-        # Intercept dataset() to build up list of accessed keys.
-        def log_datasets(dataset, default=None):
-            datasets.append(dataset)
-            return default
 
+    # Intercept dataset() to build up list of accessed keys.
+    def log_datasets(dataset, default=None):
+        datasets.append(dataset)
+        return default
+
+    # Ignore default parsing errors here; the user will get warnings from the
+    # experiment dock and on the core device anyway.
+    with suppress(Exception):
         eval_param_default(param_schema["default"], log_datasets)
-    except Exception:
-        # Ignore default parsing errors here; the user will get warnings from the
-        # experiment dock and on the core device anyway.
-        pass
     return datasets
 
 
@@ -360,7 +359,7 @@ def setup_axis_item(axis_item, axes: list[tuple[str, str, str, str, dict[str, An
         series that is displayed on this axis. These tuples can be passed directly into
         ``.cursor.CrosshairLabel``.
     """
-    unit_suffix, data_to_display_scale = get_axis_scaling_info(axes[0][-1])
+    _, data_to_display_scale = get_axis_scaling_info(axes[0][-1])
     axis_item.setScale(data_to_display_scale)
     axis_item.autoSIPrefix = False
 
@@ -432,8 +431,8 @@ def enum_to_numeric(categories, values: list[Any]):
     try:
         to_idx = {x: i for i, x in enumerate(categories)}
         return [to_idx[x] for x in values]
-    except KeyError:
-        raise KeyError("Unexpected enum value found.")
+    except KeyError as e:
+        raise KeyError("Unexpected enum value found.") from e
 
 
 def call_later(func):
@@ -489,13 +488,15 @@ def format_label_value(
     data_to_display_scale: float,
     limits: tuple[float, float],
     unit_suffix: str,
-    param_schema: dict[str, Any] = {},
+    param_schema: dict[str, Any] | None = None,
 ) -> str:
     """Format axis position with sensible precision for display in a label.
 
     We do not have any metadata for the number of digits to show, so we guess from the
     range of displayed data (if available).
     """
+    if param_schema is None:
+        param_schema = {}
     axis_type = param_schema.get("type", "float")
 
     try:
@@ -550,7 +551,7 @@ def parse_coord_param_value(coord: float, param_schema: dict[str, Any]) -> Any:
     else:
         axis_type = param_schema.get("type", "float")
         if axis_type == "int":
-            return int(round(coord))
+            return int(round(coord))  # noqa: RUF046 (float on NumPy 1.x)
         elif axis_type == "float":
             return coord
         else:
